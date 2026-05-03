@@ -1,0 +1,11 @@
+{
+  "name": "World Cup Predictor",
+  "short_name": "Cup Predictor",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0a1929",
+  "theme_color": "#0a1929",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "icons": []
+}

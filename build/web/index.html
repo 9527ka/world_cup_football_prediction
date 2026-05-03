@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="World Cup prediction WebApp">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0a1929">
+  <title>World Cup Predictor</title>
+  <base href="/">
+  <link rel="manifest" href="manifest.json">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body { background:#0a1929; margin:0; }
+    #loading { color:#fff; font-family:system-ui,sans-serif; text-align:center; padding-top:40vh; }
+  </style>
+</head>
+<body>
+  <div id="loading">Loading…</div>
+  <script>
+    // Unregister any previously installed Flutter service worker so
+    // returning users always fetch the latest main.dart.js. Telegram
+    // Mini Apps don't need offline caching.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        for (const r of regs) { r.unregister(); }
+      }).catch(function() {});
+    }
+    // Expose Telegram initData, theme, language to Flutter
+    window.__TG_INIT_DATA = '';
+    window.__TG_THEME = 'dark';
+    window.__TG_LANG = '';
+    try {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+        // Bot API 7.7+ — disable Mini App's swipe-down-to-collapse gesture.
+        // Without this, downward scrolling on a non-scrollable list will
+        // shrink the WebApp instead of being absorbed by the scrollable.
+        try { if (tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } catch (_) {}
+        window.__TG_INIT_DATA = tg.initData || '';
+        window.__TG_THEME = tg.colorScheme || 'dark';
+        const u = tg.initDataUnsafe && tg.initDataUnsafe.user;
+        if (u && u.language_code) window.__TG_LANG = u.language_code;
+      }
+      // Fallback: browser language when not in Telegram
+      if (!window.__TG_LANG && navigator.language) {
+        window.__TG_LANG = navigator.language;
+      }
+    } catch (e) { console.warn('Telegram WebApp init failed', e); }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
