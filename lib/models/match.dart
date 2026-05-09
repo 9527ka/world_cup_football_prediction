@@ -1,9 +1,129 @@
+class PeriodScore {
+  final int home;
+  final int away;
+  const PeriodScore({required this.home, required this.away});
+  factory PeriodScore.fromJson(Map<String, dynamic> j) =>
+      PeriodScore(home: (j['home'] ?? 0) as int, away: (j['away'] ?? 0) as int);
+}
+
 class TeamScore {
   final int home;
   final int away;
-  TeamScore({required this.home, required this.away});
-  factory TeamScore.fromJson(Map<String, dynamic> j) =>
-      TeamScore(home: (j['home'] ?? 0) as int, away: (j['away'] ?? 0) as int);
+  /// Per-period scores (keys: "1H", "FT", "ET", "PEN") populated by
+  /// API-Football. Null when the upstream didn't report any.
+  final Map<String, PeriodScore>? periods;
+
+  TeamScore({required this.home, required this.away, this.periods});
+
+  factory TeamScore.fromJson(Map<String, dynamic> j) {
+    Map<String, PeriodScore>? parsedPeriods;
+    final raw = j['periods'];
+    if (raw is Map) {
+      parsedPeriods = {};
+      raw.forEach((k, v) {
+        if (v is Map) {
+          parsedPeriods![k as String] =
+              PeriodScore.fromJson(v.cast<String, dynamic>());
+        }
+      });
+      if (parsedPeriods.isEmpty) parsedPeriods = null;
+    }
+    return TeamScore(
+      home: (j['home'] ?? 0) as int,
+      away: (j['away'] ?? 0) as int,
+      periods: parsedPeriods,
+    );
+  }
+}
+
+/// Per-fixture event timeline entry from API-Football's /fixtures/events.
+/// Used by match detail to show "进球时间 / 判罚时间" rows.
+class MatchEvent {
+  final int minute;
+  final int extra;
+  final int teamId;
+  final String type; // "Goal" | "Card" | "subst" | "Var"
+  final String detail; // "Yellow Card" | "Normal Goal" | "Red Card" | ...
+  final String player;
+
+  MatchEvent({
+    required this.minute,
+    this.extra = 0,
+    this.teamId = 0,
+    this.type = '',
+    this.detail = '',
+    this.player = '',
+  });
+
+  factory MatchEvent.fromJson(Map<String, dynamic> j) => MatchEvent(
+        minute: (j['minute'] ?? 0) as int,
+        extra: (j['extra'] ?? 0) as int,
+        teamId: (j['teamId'] ?? 0) is num
+            ? ((j['teamId'] ?? 0) as num).toInt()
+            : 0,
+        type: j['type'] ?? '',
+        detail: j['detail'] ?? '',
+        player: j['player'] ?? '',
+      );
+
+  bool get isGoal => type == 'Goal';
+  bool get isYellowCard => type == 'Card' && detail == 'Yellow Card';
+  bool get isRedCard =>
+      type == 'Card' && (detail == 'Red Card' || detail == 'Second Yellow card');
+  bool get isSub => type == 'subst';
+
+  String get displayMinute =>
+      extra > 0 ? '$minute+$extra\'' : '$minute\'';
+}
+
+class LiveDetail {
+  final int minute;
+  final int extra;
+  final String periodLabel;
+  final int homeCorners;
+  final int awayCorners;
+  final int homeYellow;
+  final int awayYellow;
+  final int homeRed;
+  final int awayRed;
+  final String streamUrl;
+
+  LiveDetail({
+    this.minute = 0,
+    this.extra = 0,
+    this.periodLabel = '',
+    this.homeCorners = 0,
+    this.awayCorners = 0,
+    this.homeYellow = 0,
+    this.awayYellow = 0,
+    this.homeRed = 0,
+    this.awayRed = 0,
+    this.streamUrl = '',
+  });
+
+  factory LiveDetail.fromJson(Map<String, dynamic> j) => LiveDetail(
+        minute: (j['minute'] ?? 0) as int,
+        extra: (j['extra'] ?? 0) as int,
+        periodLabel: j['periodLabel'] ?? '',
+        homeCorners: (j['homeCorners'] ?? 0) as int,
+        awayCorners: (j['awayCorners'] ?? 0) as int,
+        homeYellow: (j['homeYellow'] ?? 0) as int,
+        awayYellow: (j['awayYellow'] ?? 0) as int,
+        homeRed: (j['homeRed'] ?? 0) as int,
+        awayRed: (j['awayRed'] ?? 0) as int,
+        streamUrl: j['streamUrl'] ?? '',
+      );
+
+  String get minuteDisplay {
+    if (periodLabel == 'HT') return '中';
+    if (periodLabel == 'PEN') return '点';
+    if (extra > 0) return '$minute+$extra\'';
+    if (minute > 0) return '$minute\'';
+    return '';
+  }
+
+  bool get hasStream => streamUrl.isNotEmpty;
+  int get totalCorners => homeCorners + awayCorners;
 }
 
 class MatchInfo {
@@ -15,6 +135,10 @@ class MatchInfo {
   final String leagueName;
   final String leagueSlug;
   final TeamScore? scores;
+  final double? mlHome;
+  final double? mlDraw;
+  final double? mlAway;
+  final LiveDetail? live;
 
   MatchInfo({
     required this.id,
@@ -25,10 +149,16 @@ class MatchInfo {
     required this.leagueName,
     required this.leagueSlug,
     this.scores,
+    this.mlHome,
+    this.mlDraw,
+    this.mlAway,
+    this.live,
   });
 
   factory MatchInfo.fromJson(Map<String, dynamic> j) {
     final league = (j['league'] ?? {}) as Map<String, dynamic>;
+    final ml = j['moneyLine'] as Map<String, dynamic>?;
+    final liveJson = j['live'] as Map<String, dynamic>?;
     return MatchInfo(
       id: (j['id'] as num).toInt(),
       home: j['home'] ?? '',
@@ -40,12 +170,23 @@ class MatchInfo {
       scores: j['scores'] == null
           ? null
           : TeamScore.fromJson(j['scores'] as Map<String, dynamic>),
+      mlHome: ml == null ? null : (ml['home'] as num?)?.toDouble(),
+      mlDraw: ml == null ? null : (ml['draw'] as num?)?.toDouble(),
+      mlAway: ml == null ? null : (ml['away'] as num?)?.toDouble(),
+      live: liveJson == null ? null : LiveDetail.fromJson(liveJson),
     );
   }
 
   bool get isLive => status == 'live';
   bool get isPending => status == 'pending';
   bool get isSettled => status == 'settled';
+}
+
+class LeagueInfo {
+  final String slug;
+  final String name;
+  final int matchCount;
+  const LeagueInfo({required this.slug, required this.name, required this.matchCount});
 }
 
 class MatchPage {
@@ -103,6 +244,19 @@ class BinaryMarket {
       );
 }
 
+/// 让球盘(Asian Handicap) — 单线半数,主队让球数 line(负=主让,正=主受让)
+class HandicapMarket {
+  final double line;
+  final double home;
+  final double away;
+  HandicapMarket({required this.line, required this.home, required this.away});
+  factory HandicapMarket.fromJson(Map<String, dynamic> j) => HandicapMarket(
+        line: (j['line'] ?? 0).toDouble(),
+        home: (j['home'] ?? 0).toDouble(),
+        away: (j['away'] ?? 0).toDouble(),
+      );
+}
+
 class OddsSnapshot {
   final int matchId;
   final String bookmaker;
@@ -111,7 +265,10 @@ class OddsSnapshot {
   final List<ScoreOption> correctScore;
   final OverUnderLine? overUnder;
   final BinaryMarket? btts;
+  final HandicapMarket? handicap;
   final Map<String, String> change;
+  final bool isLive;
+  final DateTime? lockUntil;
 
   OddsSnapshot({
     required this.matchId,
@@ -121,10 +278,26 @@ class OddsSnapshot {
     required this.correctScore,
     required this.overUnder,
     required this.btts,
+    required this.handicap,
     required this.change,
+    this.isLive = false,
+    this.lockUntil,
   });
 
+  bool get isLocked {
+    final lu = lockUntil;
+    return lu != null && lu.isAfter(DateTime.now());
+  }
+
   factory OddsSnapshot.fromJson(Map<String, dynamic> j) {
+    DateTime? lu;
+    if (j['lockUntil'] != null && j['lockUntil'] is String) {
+      final s = j['lockUntil'] as String;
+      // Go zero-time RFC marshals as "0001-01-01T00:00:00Z" — treat as null.
+      if (s.isNotEmpty && !s.startsWith('0001-')) {
+        lu = DateTime.tryParse(s)?.toLocal();
+      }
+    }
     return OddsSnapshot(
       matchId: (j['matchId'] as num).toInt(),
       bookmaker: j['bookmaker'] ?? '',
@@ -142,7 +315,12 @@ class OddsSnapshot {
       btts: j['btts'] == null
           ? null
           : BinaryMarket.fromJson(j['btts'] as Map<String, dynamic>),
+      handicap: j['handicap'] == null
+          ? null
+          : HandicapMarket.fromJson(j['handicap'] as Map<String, dynamic>),
       change: ((j['change'] ?? {}) as Map).cast<String, String>(),
+      isLive: j['isLive'] == true,
+      lockUntil: lu,
     );
   }
 }
@@ -152,6 +330,8 @@ class MarketType {
   static const correctScore = 'correct_score';
   static const overUnder25 = 'over_under_2_5';
   static const btts = 'btts';
+  static const matchWinner = 'match_winner';
+  static const asianHandicap = 'asian_handicap';
 }
 
 /// 单条赔率历史采样点。
@@ -430,6 +610,52 @@ class LeaderboardEntry {
           : 'User#$userId';
 }
 
+class VipTierInfo {
+  final String key;        // i18n key e.g. 'feat.rebate.tier_gold'
+  final String rate;       // '0.5%'
+  final double minStake;   // 月最低下注本金
+  const VipTierInfo({required this.key, required this.rate, required this.minStake});
+  factory VipTierInfo.fromJson(Map<String, dynamic> j) => VipTierInfo(
+        key: (j['key'] ?? '') as String,
+        rate: (j['rate'] ?? '') as String,
+        minStake: (j['minStake'] ?? 0).toDouble(),
+      );
+}
+
+class VipStatus {
+  final double monthStake;
+  final VipTierInfo currentTier;
+  final int currentIdx;
+  final List<VipTierInfo> tiers;
+  final VipTierInfo? nextTier;
+  final double needToNext;
+  final double progress; // 0..1
+
+  const VipStatus({
+    required this.monthStake,
+    required this.currentTier,
+    required this.currentIdx,
+    required this.tiers,
+    this.nextTier,
+    required this.needToNext,
+    required this.progress,
+  });
+
+  factory VipStatus.fromJson(Map<String, dynamic> j) {
+    final tiersJson = (j['tiers'] as List?) ?? [];
+    final nextJson = j['nextTier'] as Map<String, dynamic>?;
+    return VipStatus(
+      monthStake: (j['monthStake'] ?? 0).toDouble(),
+      currentTier: VipTierInfo.fromJson(j['currentTier'] as Map<String, dynamic>),
+      currentIdx: (j['currentIdx'] ?? 0) as int,
+      tiers: tiersJson.cast<Map<String, dynamic>>().map(VipTierInfo.fromJson).toList(),
+      nextTier: nextJson == null ? null : VipTierInfo.fromJson(nextJson),
+      needToNext: (j['needToNext'] ?? 0).toDouble(),
+      progress: (j['progress'] ?? 0).toDouble(),
+    );
+  }
+}
+
 /// Aggregate prediction stats for the "我的预测" hero card.
 class UserStats {
   final double balance;
@@ -521,6 +747,13 @@ class LedgerEntry {
       );
 }
 
+class LedgerResult {
+  final List<LedgerEntry> items;
+  final String nextCursor;
+  LedgerResult({required this.items, required this.nextCursor});
+  bool get hasMore => nextCursor.isNotEmpty;
+}
+
 /// Prediction enriched with home/away/league for the bet card.
 class BetRow {
   final Prediction prediction;
@@ -563,11 +796,24 @@ class BetRow {
 
   /// Effective display status: the match status takes priority over the
   /// prediction's "pending" when the match is live.
+  /// Pred status 与 match status 合并的"用户视角真实状态"。
+  ///
+  /// 边界处理(防止 cache 陈旧 / 注入演示导致的状态错位):
+  /// 1. 若 prediction 已结算(won/lost/cashed_out/void)→ 直接用 prediction.status
+  /// 2. 否则 prediction 是 pending:
+  ///    - matchStatus == 'live' → live (主路径)
+  ///    - 下注晚于 kickoff → 必然滚球期下的注单,即使 matchStatus 现在显示 pending
+  ///      (例如 redis 注入被覆盖、fetcher 重启短时空窗)也应显示 live
+  ///    - kickoff 已过(用客户端钟比较)→ 至少应显示进行中而不是误导"待开赛"
   String get effectiveStatus {
-    if (prediction.status == 'pending' && matchStatus == 'live') {
-      return 'live';
+    if (prediction.status != 'pending') return prediction.status;
+    if (matchStatus == 'live') return 'live';
+    final md = matchDate;
+    if (md != null) {
+      if (prediction.createdAt.isAfter(md)) return 'live';
+      if (md.isBefore(DateTime.now())) return 'live';
     }
-    return prediction.status;
+    return 'pending';
   }
 }
 

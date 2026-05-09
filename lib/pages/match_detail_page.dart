@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -7,11 +9,14 @@ import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/bet_slip.dart';
 import '../services/i18n.dart';
+import '../services/stream_feed.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../utils/league_flags.dart';
 import '../utils/team_crests.dart';
 import '../utils/team_names.dart';
 import '../widgets/bet_slip_fab.dart';
+import '../widgets/light_card.dart';
 import '../widgets/odds_chip.dart';
 import '../widgets/sparkline_chart.dart';
 
@@ -63,12 +68,35 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   OddsHistory? _history;
   Timer? _historyTimer;
 
+  /// API-Football 现场统计 (角球 / 红黄牌 / 射门) — 仅 live 状态懒加载。
+  /// 503 / 失败 → 留空,UI 隐藏整段。
+  Map<String, int> _statsHome = {};
+  Map<String, int> _statsAway = {};
+  Timer? _statsTimer;
+
+  /// 进球 / 红黄牌 / 换人 时间线 — live + settled 都拉一次。
+  List<MatchEvent> _events = [];
+
   // Map of last-changed score → "up"/"down" with autoclear after ~1.2s,
   // used to flash the corresponding cells.
   final Map<String, String> _flashes = {};
   final Map<String, Timer> _flashTimers = {};
 
-  bool get _locked => !widget.match.isPending;
+  /// 底部 drawer 实际像素高度 — bottomSheet 不会自动给 ListView 加 padding,
+  /// 必须 PostFrame 测量后回灌。drawer 含动态显示的 _placeOK / _placeError 卡片,
+  /// 高度会变 → 用 GlobalKey 实时跟随。
+  final GlobalKey _drawerKey = GlobalKey();
+  double _drawerHeight = 230; // 初始合理猜测,首帧后被实际值覆盖
+
+  // 只有 settled(已结束)的比赛完全锁住下注。pending 和 live 都允许投注。
+  bool get _locked => widget.match.isSettled;
+  bool get _isLive => widget.match.isLive;
+  // 滚球进球封盘期 — 拒绝下注但可继续选择/查看
+  bool get _liveLocked {
+    final lu = _odds?.lockUntil;
+    return lu != null && lu.isAfter(DateTime.now());
+  }
+  Timer? _lockTickTimer;
 
   @override
   void initState() {
@@ -98,6 +126,98 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     // 拉一次历史,然后每 30s 刷新一次(后端每分钟写一笔)。
     _refreshHistory();
     _historyTimer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshHistory());
+
+    // 滚球封盘倒计时 1s 重绘 — 仅在 live 时跑,否则白消耗 CPU。
+    if (_isLive) {
+      _lockTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+
+    // 加载 stream feed cache(若已在列表页拉过会直接命中,无网络开销)
+    StreamFeed.instance.ensure(widget.state.api).then((_) {
+      if (mounted) setState(() {});
+    });
+
+    // 拉一次 stats + events; live 状态每 60s 刷新 stats(每场 1 req)
+    _refreshStatsAndEvents();
+    if (_isLive) {
+      _statsTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+        _refreshStatsAndEvents();
+      });
+    }
+  }
+
+  /// Resolve a playable m3u8 stream for this match. 7t666 feed (joined by
+  /// Chinese team name) takes precedence; LiveDetail.streamUrl is the fallback.
+  String _streamUrlForMatch() {
+    final m = widget.match;
+    final feed = StreamFeed.instance.find(m.home, m.away, m.date);
+    return feed?.streamUrl ?? m.live?.streamUrl ?? '';
+  }
+
+  void _openStream() {
+    final url = _streamUrlForMatch();
+    if (url.isEmpty) return;
+    final m = widget.match;
+    try {
+      globalContext.callMethod(
+        'openLiveStream'.toJS,
+        url.toJS,
+        localizedTeam(m.home).toJS,
+        localizedTeam(m.away).toJS,
+      );
+    } catch (_) {}
+  }
+
+  Widget _watchLiveButton() {
+    return GestureDetector(
+      onTap: _openStream,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFFF4040), Color(0xFFC8001A)],
+          ),
+          borderRadius: BorderRadius.circular(6),
+          boxShadow: const [
+            BoxShadow(color: Color(0x55FF4040), blurRadius: 6, offset: Offset(0, 2)),
+          ],
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.play_arrow, color: Colors.white, size: 12),
+            SizedBox(width: 2),
+            Text('看直播',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _refreshStatsAndEvents() async {
+    // 仅有 live / settled 才有意义;pending 比赛上游会返回空
+    if (!_isLive && !widget.match.isSettled) return;
+    try {
+      final r = await widget.state.api.getMatchStats(widget.match.id);
+      if (!mounted) return;
+      setState(() {
+        _statsHome = r.home;
+        _statsAway = r.away;
+      });
+    } catch (_) {/* 503 or transient — silent */}
+    try {
+      final ev = await widget.state.api.getMatchEvents(widget.match.id);
+      if (!mounted) return;
+      setState(() => _events = ev);
+    } catch (_) {}
   }
 
   Future<void> _refreshHistory() async {
@@ -151,6 +271,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     widget.state.stream.unsubscribe(widget.match.id);
     _sub?.cancel();
     _historyTimer?.cancel();
+    _lockTickTimer?.cancel();
+    _statsTimer?.cancel();
     for (final t in _flashTimers.values) {
       t.cancel();
     }
@@ -160,6 +282,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   Future<void> _place() async {
     final sel = _selected;
     if (sel == null) return;
+    if (_placing) return; // double-tap guard
     setState(() {
       _placing = true;
       _placeError = null;
@@ -204,6 +327,18 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Widget _buildScaffold(BuildContext context) {
+    // 每帧后测一次 drawer 高度,差超过 2px 才回灌(避免无限 setState)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _drawerKey.currentContext;
+      if (ctx == null || !mounted) return;
+      final box = ctx.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      final h = box.size.height;
+      if ((h - _drawerHeight).abs() > 2) {
+        setState(() => _drawerHeight = h);
+      }
+    });
+    final bottomPad = _locked ? 96.0 : (_drawerHeight + 16);
     return Scaffold(
       extendBody: true,
       backgroundColor: T.bgPage,
@@ -217,27 +352,21 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   _topBar(),
                   Expanded(
                 child: ListView(
-                  padding: EdgeInsets.fromLTRB(0, 0, 0, _locked ? 96 : 230),
+                  padding: EdgeInsets.fromLTRB(0, 0, 0, bottomPad),
                   children: [
                     _hero(),
                     if (_locked) _lockedBanner(),
+                    if (_isLive && !_locked) _liveBanner(),
+                    if (_statsHome.isNotEmpty || _statsAway.isNotEmpty)
+                      _liveStatsSection(),
+                    if (_events.isNotEmpty) _eventsTimelineSection(),
                     _sectionHeader(),
                     _columnLabels(),
                     _scoreGrid(),
+                    _winnerSection(),
+                    _handicapSection(),
                     _overUnderSection(),
                     _bttsSection(),
-                    if (_placeError != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                        child: Text(_placeError!,
-                            style: const TextStyle(color: T.down)),
-                      ),
-                    if (_placeOK != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                        child: Text(_placeOK!,
-                            style: const TextStyle(color: T.upDark)),
-                      ),
                   ],
                 ),
               ),
@@ -247,14 +376,16 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               // 在这里独立挂一个,位置避开底部 _betDrawer/_lockedDrawer。
               Positioned(
                 right: 16,
-                bottom: _locked ? 100 : 240,
+                bottom: _locked ? 100 : (_drawerHeight + 24),
                 child: BetSlipFab(state: widget.state),
               ),
             ],
           ),
         ),
       ),
-      bottomSheet: _locked ? _lockedDrawer() : _betDrawer(),
+      bottomSheet: _locked
+          ? _lockedDrawer()
+          : KeyedSubtree(key: _drawerKey, child: _betDrawer()),
     );
   }
 
@@ -305,7 +436,6 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   Widget _hero() {
     final m = widget.match;
-    final live = m.isLive;
     final fmt = DateFormat('MM-dd · HH:mm');
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
@@ -347,20 +477,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                             color: T.inkLo,
                             fontSize: 10,
                             fontWeight: FontWeight.w800)),
-                  )
-                else if (live)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFE9E6),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Text('● LIVE',
-                        style: TextStyle(
-                            color: T.down,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800)),
                   ),
+                if (_streamUrlForMatch().isNotEmpty) _watchLiveButton(),
               ],
             ),
             const SizedBox(height: 14),
@@ -557,6 +675,242 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     );
   }
 
+  /// 滚球提示横幅 — 平时绿色"滚球中,赔率随比分动态变化",
+  /// 进球后 60s 内变红色"封盘 N 秒"。
+  Widget _liveBanner() {
+    final lu = _odds?.lockUntil;
+    final locked = lu != null && lu.isAfter(DateTime.now());
+    final secs = locked ? lu.difference(DateTime.now()).inSeconds + 1 : 0;
+    final colors = locked
+        ? const [Color(0x1AE03E2D), Color(0x08E03E2D)]
+        : const [Color(0x1A4CAF50), Color(0x084CAF50)];
+    final borderColor = locked ? const Color(0x3AE03E2D) : const Color(0x3A4CAF50);
+    final dotColor = locked ? T.down : T.upDark;
+    final title = locked ? tr('detail.live_locked_title') : tr('detail.live_title');
+    final desc = locked
+        ? tr('detail.live_locked_desc').replaceAll('{secs}', '$secs')
+        : tr('detail.live_desc');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: colors),
+          border: Border.all(color: borderColor),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 8, height: 8,
+              decoration: BoxDecoration(
+                color: dotColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(title,
+                style: TextStyle(fontSize: 12, color: dotColor, fontWeight: FontWeight.w800)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(desc,
+                  style: const TextStyle(fontSize: 11, color: T.inkMd)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Live stats panel: corners / yellow / red / shots ───────────────
+  // Bilateral bars centered around the team labels — the wider side wins.
+
+  Widget _liveStatsSection() {
+    final rows = <_StatRow>[
+      _StatRow('角球', 'corners', _statsHome['corners'] ?? 0, _statsAway['corners'] ?? 0),
+      _StatRow('黄牌', 'yellow', _statsHome['yellow'] ?? 0, _statsAway['yellow'] ?? 0),
+      _StatRow('红牌', 'red', _statsHome['red'] ?? 0, _statsAway['red'] ?? 0),
+      _StatRow('射门', 'shots', _statsHome['shots'] ?? 0, _statsAway['shots'] ?? 0),
+      _StatRow('射正', 'shotsOnTarget', _statsHome['shotsOnTarget'] ?? 0, _statsAway['shotsOnTarget'] ?? 0),
+    ].where((r) => r.home > 0 || r.away > 0).toList();
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: LightCard(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('现场技术统计',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w800, color: T.ink)),
+            const SizedBox(height: 10),
+            for (final r in rows) ...[
+              _statRow(r),
+              const SizedBox(height: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statRow(_StatRow r) {
+    final total = (r.home + r.away).clamp(1, 1 << 30);
+    final hf = r.home / total;
+    final af = r.away / total;
+    return Row(
+      children: [
+        // home bar (right-aligned, fills from center)
+        Expanded(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text('${r.home}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: T.fontMono,
+                      fontWeight: FontWeight.w700,
+                      color: r.home > r.away ? T.brandDeep : T.inkMd)),
+              const SizedBox(width: 6),
+              Container(
+                width: 80 * hf,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: r.color,
+                  borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(3), bottomLeft: Radius.circular(3)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // label center
+        Container(
+          width: 56,
+          alignment: Alignment.center,
+          child: Text(r.label,
+              style: const TextStyle(
+                  fontSize: 11, color: T.inkLo, fontWeight: FontWeight.w600)),
+        ),
+        Expanded(
+          child: Row(
+            children: [
+              Container(
+                width: 80 * af,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: r.color.withValues(alpha: 0.6),
+                  borderRadius: const BorderRadius.only(
+                      topRight: Radius.circular(3), bottomRight: Radius.circular(3)),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text('${r.away}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: T.fontMono,
+                      fontWeight: FontWeight.w700,
+                      color: r.away > r.home ? T.brandDeep : T.inkMd)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Events timeline: goals, cards, subs with elapsed minute ────────
+
+  Widget _eventsTimelineSection() {
+    // sort by minute ascending; group by event type for compact display
+    final goals = _events.where((e) => e.isGoal).toList();
+    final yellows = _events.where((e) => e.isYellowCard).toList();
+    final reds = _events.where((e) => e.isRedCard).toList();
+    if (goals.isEmpty && yellows.isEmpty && reds.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: LightCard(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('比赛事件',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w800, color: T.ink)),
+            const SizedBox(height: 10),
+            if (goals.isNotEmpty) _eventRow('⚽ 进球', goals, T.up),
+            if (yellows.isNotEmpty) _eventRow('🟨 黄牌', yellows, const Color(0xFFF5B544)),
+            if (reds.isNotEmpty) _eventRow('🟥 红牌', reds, T.down),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _eventRow(String label, List<MatchEvent> events, Color accent) {
+    // We don't have reliable home/away team IDs on MatchInfo, so events are
+    // rendered as a flat list grouped by type (goals/yellows/reds), each
+    // chip showing minute + player name. Sufficient for the "进球时间 /
+    // 判罚时间" view without needing per-team alignment.
+    final byMinute = [...events]..sort((a, b) => a.minute.compareTo(b.minute));
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 4,
+                height: 12,
+                decoration: BoxDecoration(
+                    color: accent, borderRadius: BorderRadius.circular(2)),
+              ),
+              const SizedBox(width: 6),
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w700, color: T.ink)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: byMinute.map((e) {
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(e.displayMinute,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            fontFamily: T.fontMono,
+                            color: accent)),
+                    if (e.player.isNotEmpty) ...[
+                      const SizedBox(width: 5),
+                      Text(e.player,
+                          style: const TextStyle(
+                              fontSize: 11, color: T.inkMd)),
+                    ],
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _sectionHeader() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
@@ -664,7 +1018,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                               final opt = cols[c][r];
                               final key = '${MarketType.correctScore}::${opt.score}';
                               final myStake = _myBets[key];
-                              final disabled = _locked || myStake != null;
+                              final disabled = _locked || myStake != null || opt.price <= 0;
                               final isSelected = _selected?.marketType == MarketType.correctScore &&
                                                  _selected?.score == opt.score;
                               final inSlip = widget.state.betSlip.containsKey(
@@ -697,7 +1051,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               final opt = other!;
               final key = '${MarketType.correctScore}::${opt.score}';
               final myStake = _myBets[key];
-              final disabled = _locked || myStake != null;
+              final disabled = _locked || myStake != null || opt.price <= 0;
               final isSelected = _selected?.marketType == MarketType.correctScore &&
                                  _selected?.score == opt.score;
               final inSlip = widget.state.betSlip.containsKey(
@@ -794,6 +1148,159 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   // ── 双方进球 BTTS ───────────────────────────────────────────────
+  // 独赢(1X2) — 用 moneyLine 数据,三个选项 home/draw/away 各自可投注。
+  Widget _winnerSection() {
+    final ml = _odds?.moneyLine;
+    if (ml == null) return const SizedBox.shrink();
+    Widget tile(String score, String label, String hint, double price, Color accent) {
+      return Expanded(
+        child: _BinaryBetTile(
+          label: label,
+          hint: hint,
+          price: price,
+          selected: _selected?.marketType == MarketType.matchWinner &&
+              _selected?.score == score,
+          myStake: _myBets['${MarketType.matchWinner}::$score'],
+          inSlip: widget.state.betSlip
+              .containsKey('${widget.match.id}::${MarketType.matchWinner}::$score'),
+          locked: _locked,
+          accent: accent,
+          onTap: () => setState(() => _selected = _BetSelection(
+                marketType: MarketType.matchWinner,
+                score: score,
+                price: price,
+                label: '${tr('detail.winner_title')} · $label',
+              )),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8, left: 2),
+            child: Row(
+              children: [
+                const Icon(Icons.flag, size: 14, color: T.brandDeep),
+                const SizedBox(width: 5),
+                Text(tr('detail.winner_title'),
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+              ],
+            ),
+          ),
+          Row(
+            children: [
+              tile('home', tr('detail.win_home'), localizedTeam(widget.match.home), ml.home, T.up),
+              const SizedBox(width: 8),
+              tile('draw', tr('detail.draw'), tr('detail.winner_draw_hint'), ml.draw, T.brandDeep),
+              const SizedBox(width: 8),
+              tile('away', tr('detail.win_away'), localizedTeam(widget.match.away), ml.away, T.down),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 让球(Asian Handicap)— line + home/away 两选项。
+  Widget _handicapSection() {
+    final h = _odds?.handicap;
+    if (h == null) return const SizedBox.shrink();
+    final lineStr = h.line >= 0 ? '+${h.line.toStringAsFixed(1)}' : h.line.toStringAsFixed(1);
+    String homeHint, awayHint;
+    if (h.line < 0) {
+      // 主队让球
+      homeHint = tr('detail.ah_home_give').replaceAll('{n}', (-h.line).toStringAsFixed(1));
+      awayHint = tr('detail.ah_away_take').replaceAll('{n}', (-h.line).toStringAsFixed(1));
+    } else {
+      // 主队受让
+      homeHint = tr('detail.ah_home_take').replaceAll('{n}', h.line.toStringAsFixed(1));
+      awayHint = tr('detail.ah_away_give').replaceAll('{n}', h.line.toStringAsFixed(1));
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8, left: 2),
+            child: Row(
+              children: [
+                const Icon(Icons.compare_arrows, size: 14, color: T.brandDeep),
+                const SizedBox(width: 5),
+                Text(tr('detail.handicap_title'),
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: const Color(0x202CD7FD),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(lineStr,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontFamily: T.fontMono,
+                          fontWeight: FontWeight.w800,
+                          color: T.brandDeep)),
+                ),
+              ],
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: _BinaryBetTile(
+                  label: localizedTeam(widget.match.home),
+                  hint: homeHint,
+                  price: h.home,
+                  selected: _selected?.marketType == MarketType.asianHandicap &&
+                      _selected?.score == 'home',
+                  myStake: _myBets['${MarketType.asianHandicap}::home'],
+                  inSlip: widget.state.betSlip.containsKey(
+                      '${widget.match.id}::${MarketType.asianHandicap}::home'),
+                  locked: _locked,
+                  accent: T.up,
+                  onTap: () => setState(() => _selected = _BetSelection(
+                        marketType: MarketType.asianHandicap,
+                        score: 'home',
+                        price: h.home,
+                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.home)} $lineStr',
+                      )),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _BinaryBetTile(
+                  label: localizedTeam(widget.match.away),
+                  hint: awayHint,
+                  price: h.away,
+                  selected: _selected?.marketType == MarketType.asianHandicap &&
+                      _selected?.score == 'away',
+                  myStake: _myBets['${MarketType.asianHandicap}::away'],
+                  inSlip: widget.state.betSlip.containsKey(
+                      '${widget.match.id}::${MarketType.asianHandicap}::away'),
+                  locked: _locked,
+                  accent: T.down,
+                  onTap: () => setState(() => _selected = _BetSelection(
+                        marketType: MarketType.asianHandicap,
+                        score: 'away',
+                        price: h.away,
+                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.away)} ${h.line >= 0 ? '-' : '+'}${(h.line.abs()).toStringAsFixed(1)}',
+                      )),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _bttsSection() {
     final btts = _odds?.btts;
     if (btts == null) return const SizedBox.shrink();
@@ -863,151 +1370,99 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   // ── bet drawer ────────────────────────────────────────────────────
+  /// 紧凑下注栏 — 默认折叠态,只展示一个按钮。
+  /// 选中波胆/玩法之前:灰按钮"请先选择波胆",不可点
+  /// 选中后:亮蓝按钮"立即下注 · {label} @ {odds}",点击弹出 [_buildBetSheet]
+  /// 滚球封盘期间:倒计时占位,不可点
   Widget _betDrawer() {
     final sel = _selected;
-    final stakeFmt = NumberFormat('#,##0').format(_stake);
-    final payout = sel == null ? 0 : (_stake * sel.price);
-    final selLabel = sel?.label ?? tr('detail.bet_pick');
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 22),
-      decoration: const BoxDecoration(
-        color: Color(0xF2FFFFFF),
-        border: Border(top: BorderSide(color: Color(0x402CD7FD))),
-        boxShadow: [
-          BoxShadow(color: Color(0x1A0E2238), blurRadius: 24, offset: Offset(0, -8))
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                decoration: BoxDecoration(
-                  gradient: T.brandGradientShort,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(selLabel,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800)),
-              ),
-              const SizedBox(width: 8),
-              Text(tr('detail.bet_odds'), style: const TextStyle(fontSize: 11, color: T.inkLo)),
-              const SizedBox(width: 4),
-              Text(sel == null ? '—' : sel.price.toStringAsFixed(2),
-                  style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: T.gold,
-                      fontFamily: T.fontMono)),
-              const Spacer(),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+    final ready = sel != null && !_liveLocked;
+    String label;
+    if (_liveLocked) {
+      final secs = (_odds!.lockUntil!.difference(DateTime.now()).inSeconds + 1)
+          .clamp(0, 99);
+      label = tr('detail.bet_live_locked').replaceAll('{secs}', '$secs');
+    } else if (sel == null) {
+      label = tr('detail.bet_lock_pending');
+    } else {
+      label = '${tr('detail.bet_quick_open')} · ${sel.label} @ ${sel.price.toStringAsFixed(2)}';
+    }
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+        height: 56,
+        decoration: BoxDecoration(
+          gradient: ready ? T.brandGradientShort : null,
+          color: ready ? null : const Color(0xFFEEF2F7),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: ready
+              ? const [
+                  BoxShadow(color: Color(0x4D11BAD9), blurRadius: 14, offset: Offset(0, 6))
+                ]
+              : null,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: ready ? _showBetSheet : null,
+            child: Center(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(tr('detail.bet_payout'),
-                      style: const TextStyle(fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
-                  Text('+${NumberFormat('#,##0.00').format(payout)} USDT',
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: T.up,
-                          fontFamily: T.fontMono)),
+                  Icon(
+                    ready ? Icons.flash_on_rounded : Icons.lock_outline,
+                    size: 18,
+                    color: ready ? Colors.white : T.inkLo,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(label,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: ready ? Colors.white : T.inkLo)),
+                  ),
                 ],
               ),
-            ],
+            ),
           ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Text(tr('detail.bet_chip'),
-                  style: const TextStyle(fontSize: 11, color: T.inkLo, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Text('$stakeFmt USDT',
-                  style: const TextStyle(
-                      fontSize: 17, fontWeight: FontWeight.w800, color: T.ink, fontFamily: T.fontMono)),
-            ],
-          ),
-          Slider(
-            value: _stake.clamp(10, 10000),
-            min: 10, max: 10000, divisions: 999,
-            onChanged: (v) => setState(() => _stake = v),
-          ),
-          Row(
-            children: [
-              for (final p in const [10, 50, 100, 500, 1000])
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    child: _StakePreset(
-                      value: p.toDouble(),
-                      label: p >= 1000 ? '${p ~/ 1000}K' : '$p',
-                      selected: _stake == p,
-                      onTap: () => setState(() => _stake = p.toDouble()),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              // Add to bet slip — secondary action.
-              SizedBox(
-                height: 48,
-                child: OutlinedButton.icon(
-                  onPressed: sel == null ? null : _addToSlip,
-                  icon: const Icon(Icons.add_shopping_cart, size: 16),
-                  label: Text(tr('detail.add_slip'),
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: T.brandDeep,
-                    side: const BorderSide(color: T.brand),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Quick single-bet — primary action.
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: ElevatedButton.icon(
-                    onPressed: _placing || sel == null ? null : _place,
-                    icon: _placing
-                        ? const SizedBox(
-                            width: 14, height: 14,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.lock_outline, size: 16),
-                    label: Text(
-                      _placing
-                          ? tr('detail.bet_submitting')
-                          : sel == null
-                              ? tr('detail.bet_lock_pending')
-                              : tr('detail.bet_lock_format')
-                                  .replaceAll('{score}', sel.label)
-                                  .replaceAll('{stake}', stakeFmt),
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: T.brand,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      elevation: 6,
-                      shadowColor: const Color(0x4D11BAD9),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// 弹出底部 sheet:筹码选择 + 加入投注单 / 锁定下注 双按钮。
+  /// 完成或失败后通过 Toast 反馈,sheet 自动关闭。
+  void _showBetSheet() {
+    if (_selected == null) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) => _BetSheet(
+        sel: _selected!,
+        initialStake: _stake,
+        liveLocked: _liveLocked,
+        onStakeChanged: (v) => setState(() => _stake = v),
+        onAddToSlip: () {
+          _addToSlip();
+          Navigator.pop(sheetCtx);
+        },
+        onPlace: () async {
+          Navigator.pop(sheetCtx);
+          await _place();
+          if (!mounted) return;
+          if (_placeOK != null) {
+            Toast.success(context, _placeOK!);
+            setState(() => _placeOK = null);
+          } else if (_placeError != null) {
+            Toast.error(context, _placeError!);
+            setState(() => _placeError = null);
+          }
+        },
       ),
     );
   }
@@ -1027,12 +1482,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       price: sel.price,
       label: sel.label,
     ));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${tr('detail.added_slip')} · ${sel.label}'),
-      duration: const Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 240),
-    ));
+    Toast.show(context, '${tr('detail.added_slip')} · ${sel.label}', kind: 'info');
     setState(() => _selected = null);
   }
 
@@ -1234,11 +1684,15 @@ class _ScoreCell extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            option.price.toStringAsFixed(2),
+                            option.price <= 0 ? '—' : option.price.toStringAsFixed(2),
                             style: TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w800,
-                              color: selected ? Colors.white : _accent,
+                              color: option.price <= 0
+                                  ? T.inkLo
+                                  : selected
+                                      ? Colors.white
+                                      : _accent,
                               fontFamily: T.fontMono,
                             ),
                           ),
@@ -1350,7 +1804,9 @@ class _BinaryBetTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final betted = myStake != null;
-    final disabled = locked || betted;
+    // price <= 0 表示该选项滚球期已不可投注(如已超过 OU line / 双方都进球后的 BTTS No)。
+    final unavailable = price <= 0;
+    final disabled = locked || betted || unavailable;
     final stakeFmt = betted ? NumberFormat('#,##0').format(myStake) : '';
 
     final BoxDecoration deco;
@@ -1425,12 +1881,16 @@ class _BinaryBetTile extends StatelessWidget {
                             ),
                           )
                         else
-                          Text(price.toStringAsFixed(2),
+                          Text(unavailable ? '—' : price.toStringAsFixed(2),
                               style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w800,
                                   fontFamily: T.fontMono,
-                                  color: selected ? Colors.white : accent)),
+                                  color: unavailable
+                                      ? T.inkLo
+                                      : selected
+                                          ? Colors.white
+                                          : accent)),
                       ],
                     ),
                     const SizedBox(height: 2),
@@ -1459,5 +1919,212 @@ class _BinaryBetTile extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// 弹出式下注 sheet:筹码 slider + 5 预设 + 加入投注单 / 锁定下注双按钮。
+/// 父页只在用户已选 [_BetSelection] 后才打开,所以这里 sel 必非空。
+class _BetSheet extends StatefulWidget {
+  const _BetSheet({
+    required this.sel,
+    required this.initialStake,
+    required this.liveLocked,
+    required this.onStakeChanged,
+    required this.onAddToSlip,
+    required this.onPlace,
+  });
+
+  final _BetSelection sel;
+  final double initialStake;
+  final bool liveLocked;
+  final ValueChanged<double> onStakeChanged;
+  final VoidCallback onAddToSlip;
+  final VoidCallback onPlace;
+
+  @override
+  State<_BetSheet> createState() => _BetSheetState();
+}
+
+class _BetSheetState extends State<_BetSheet> {
+  late double _stake;
+
+  @override
+  void initState() {
+    super.initState();
+    _stake = widget.initialStake;
+  }
+
+  void _set(double v) {
+    setState(() => _stake = v);
+    widget.onStakeChanged(v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sel = widget.sel;
+    final stakeFmt = NumberFormat('#,##0').format(_stake);
+    final payout = _stake * sel.price;
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+          16, 8, 16, MediaQuery.of(context).viewInsets.bottom + 22),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36, height: 4, margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFD9DEE5),
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    gradient: T.brandGradientShort,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(sel.label,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800)),
+                ),
+                const SizedBox(width: 8),
+                Text(tr('detail.bet_odds'), style: const TextStyle(fontSize: 11, color: T.inkLo)),
+                const SizedBox(width: 4),
+                Text(sel.price.toStringAsFixed(2),
+                    style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: T.gold,
+                        fontFamily: T.fontMono)),
+                const Spacer(),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(tr('detail.bet_payout'),
+                        style: const TextStyle(fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
+                    Text('+${NumberFormat('#,##0.00').format(payout)} USDT',
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: T.up,
+                            fontFamily: T.fontMono)),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Text(tr('detail.bet_chip'),
+                    style: const TextStyle(fontSize: 11, color: T.inkLo, fontWeight: FontWeight.w600)),
+                const Spacer(),
+                Text('$stakeFmt USDT',
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w800, color: T.ink, fontFamily: T.fontMono)),
+              ],
+            ),
+            Slider(
+              value: _stake.clamp(10, 10000),
+              min: 10, max: 10000, divisions: 999,
+              onChanged: (v) => _set(v),
+            ),
+            Row(
+              children: [
+                for (final p in const [10, 50, 100, 500, 1000])
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: _StakePreset(
+                        value: p.toDouble(),
+                        label: p >= 1000 ? '${p ~/ 1000}K' : '$p',
+                        selected: _stake == p,
+                        onTap: () => _set(p.toDouble()),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                SizedBox(
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    onPressed: widget.liveLocked ? null : widget.onAddToSlip,
+                    icon: const Icon(Icons.add_shopping_cart, size: 16),
+                    label: Text(tr('detail.add_slip'),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: T.brandDeep,
+                      side: const BorderSide(color: T.brand),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: widget.liveLocked ? null : widget.onPlace,
+                      icon: const Icon(Icons.lock_outline, size: 16),
+                      label: Text(
+                        tr('detail.bet_lock_format')
+                            .replaceAll('{score}', sel.label)
+                            .replaceAll('{stake}', stakeFmt),
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: T.brand,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        elevation: 6,
+                        shadowColor: const Color(0x4D11BAD9),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Visual descriptor for one row in the live-stats panel.
+class _StatRow {
+  final String label;
+  final String key;
+  final int home;
+  final int away;
+  const _StatRow(this.label, this.key, this.home, this.away);
+
+  Color get color {
+    switch (key) {
+      case 'corners':
+        return const Color(0xFFFF9800);
+      case 'yellow':
+        return const Color(0xFFFBC02D);
+      case 'red':
+        return T.down;
+      case 'shots':
+      case 'shotsOnTarget':
+        return T.brandDeep;
+    }
+    return T.brandDeep;
   }
 }

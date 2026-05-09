@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 
+import '../models/match.dart';
+import '../services/app_state.dart';
 import '../services/i18n.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
 
@@ -41,10 +45,7 @@ class ShareEarnPage extends StatelessWidget {
 
   void _copy(BuildContext ctx, String text) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(ctx)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-          content: Text(tr('common.copied')), duration: const Duration(milliseconds: 1200)));
+    Toast.show(ctx, tr('common.copied'));
   }
 
   @override
@@ -587,217 +588,277 @@ class _RebateRow extends StatelessWidget {
 // 3. VipPage — VIP 等级
 // ═════════════════════════════════════════════════════════════════════════════
 
-class VipPage extends StatelessWidget {
-  const VipPage({super.key});
+class VipPage extends StatefulWidget {
+  const VipPage({super.key, required this.state});
+  final AppState state;
 
-  static const _tiers = <_VipDetail>[
-    _VipDetail('feat.rebate.tier_normal', '0.3%', '0', Icons.person_outline_rounded),
-    _VipDetail('feat.rebate.tier_silver', '0.4%', '5,000', Icons.shield_outlined),
-    _VipDetail('feat.rebate.tier_gold', '0.5%', '20,000', Icons.star_rounded),
-    _VipDetail('feat.rebate.tier_platinum', '0.6%', '80,000', Icons.diamond_outlined),
-    _VipDetail('feat.rebate.tier_diamond', '0.8%', '200,000', Icons.diamond_rounded),
-    _VipDetail('feat.rebate.tier_supreme', '1.0%', '500,000', Icons.workspace_premium_rounded),
+  @override
+  State<VipPage> createState() => _VipPageState();
+}
+
+class _VipPageState extends State<VipPage> {
+  // 等级图标按服务器返回的 idx 映射(顺序与 vipTiers 对齐)。
+  static const _icons = <IconData>[
+    Icons.person_outline_rounded,
+    Icons.shield_outlined,
+    Icons.star_rounded,
+    Icons.diamond_outlined,
+    Icons.diamond_rounded,
+    Icons.workspace_premium_rounded,
   ];
 
-  // Current tier index (黄金 = 2)
-  static const _current = 2;
+  Future<VipStatus>? _future;
+  final _money = NumberFormat('#,##0');
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  void _refresh() {
+    setState(() => _future = widget.state.api.getVip());
+  }
+
+  IconData _iconFor(int idx) =>
+      idx >= 0 && idx < _icons.length ? _icons[idx] : Icons.person_outline_rounded;
 
   @override
   Widget build(BuildContext context) {
-    final cur = _tiers[_current];
-    final next = _current < _tiers.length - 1 ? _tiers[_current + 1] : null;
-
     return Scaffold(
       appBar: _appBar(context, tr('feat.vip.title')),
       body: DecoratedBox(
         decoration: _pageBg,
         child: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            children: [
-              // ── current level hero ──
-              LightCard(
-                gradient: T.goldGradient,
-                child: Column(
-                  children: [
-                    Icon(cur.icon, size: 40, color: const Color(0xFF5A3A10)),
-                    const SizedBox(height: 6),
-                    Text(tr('feat.vip.current_member').replaceAll('{name}', tr(cur.name)),
-                        style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF5A3A10))),
-                    const SizedBox(height: 4),
-                    Text(tr('feat.vip.rebate_rate').replaceAll('{rate}', cur.rate),
-                        style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xCC5A3A10))),
-                  ],
-                ),
-              ),
-
-              if (next != null) ...[
-                const SizedBox(height: 16),
-                _sectionLabel(tr('feat.vip.upgrade_progress')),
-                LightCard(
+          child: FutureBuilder<VipStatus>(
+            future: _future,
+            builder: (ctx, snap) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator(color: T.brandDeep));
+              }
+              if (snap.hasError || !snap.hasData) {
+                return Center(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(tr('feat.vip.next').replaceAll('{name}', tr(next.name)),
-                              style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: T.inkMd)),
-                          Text(tr('feat.vip.month_min').replaceAll('{n}', next.minBet),
-                              style: const TextStyle(
-                                  fontSize: 12, color: T.inkLo)),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: LinearProgressIndicator(
-                          value: 0.35,
-                          minHeight: 8,
-                          backgroundColor: T.fill,
-                          valueColor: const AlwaysStoppedAnimation(T.brand),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(tr('feat.vip.bet_progress')
-                              .replaceAll('{cur}', '28,000')
-                              .replaceAll('{total}', '80,000'),
-                          style: const TextStyle(fontSize: 12, color: T.inkLo)),
+                      Text('${tr('common.error')}: ${snap.error ?? ''}',
+                          style: const TextStyle(color: T.down)),
+                      const SizedBox(height: 12),
+                      ElevatedButton(onPressed: _refresh, child: Text(tr('common.retry'))),
                     ],
                   ),
-                ),
-              ],
-
-              const SizedBox(height: 16),
-
-              // ── tier list ──
-              _sectionLabel(tr('feat.vip.list')),
-              for (var i = 0; i < _tiers.length; i++)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: LightCard(
-                    border: i == _current
-                        ? Border.all(color: T.brand, width: 1.5)
-                        : null,
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: i == _current
-                                ? T.brand.withValues(alpha: 0.12)
-                                : T.fill,
-                            borderRadius: BorderRadius.circular(T.rSm),
-                          ),
-                          alignment: Alignment.center,
-                          child: Icon(_tiers[i].icon,
-                              size: 22,
-                              color:
-                                  i == _current ? T.brandDeep : T.inkLo),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Text(tr(_tiers[i].name),
-                                      style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w700,
-                                          color: i == _current
-                                              ? T.brandDeep
-                                              : T.ink)),
-                                  if (i == _current) ...[
-                                    const SizedBox(width: 6),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 1),
-                                      decoration: BoxDecoration(
-                                        color: T.brand.withValues(alpha: 0.12),
-                                        borderRadius:
-                                            BorderRadius.circular(4),
-                                      ),
-                                      child: Text(tr('feat.vip.current'),
-                                          style: const TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w700,
-                                              color: T.brandDeep)),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                  tr('feat.vip.month_min').replaceAll('{n}', _tiers[i].minBet),
-                                  style: const TextStyle(
-                                      fontSize: 12, color: T.inkLo)),
-                            ],
-                          ),
-                        ),
-                        Text(_tiers[i].rate,
-                            style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                                color: i == _current
-                                    ? T.brandDeep
-                                    : T.inkMd)),
-                      ],
-                    ),
-                  ),
-                ),
-
-              const SizedBox(height: 16),
-
-              // ── benefits ──
-              _sectionLabel(tr('feat.vip.benefits')),
-              LightCard(
-                child: Column(
-                  children: [
-                    _BenefitItem(
-                        icon: Icons.percent_rounded,
-                        text: tr('feat.vip.b1')),
-                    const SizedBox(height: 10),
-                    _BenefitItem(
-                        icon: Icons.bolt_rounded,
-                        text: tr('feat.vip.b2')),
-                    const SizedBox(height: 10),
-                    _BenefitItem(
-                        icon: Icons.card_giftcard_rounded,
-                        text: tr('feat.vip.b3')),
-                    const SizedBox(height: 10),
-                    _BenefitItem(
-                        icon: Icons.support_agent_rounded,
-                        text: tr('feat.vip.b4')),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
+                );
+              }
+              return _content(snap.data!);
+            },
           ),
         ),
       ),
     );
   }
-}
 
-class _VipDetail {
-  const _VipDetail(this.name, this.rate, this.minBet, this.icon);
-  final String name;
-  final String rate;
-  final String minBet;
-  final IconData icon;
+  Widget _content(VipStatus vip) {
+    final cur = vip.currentTier;
+    final next = vip.nextTier;
+    return RefreshIndicator(
+      color: T.brandDeep,
+      onRefresh: () async {
+        _refresh();
+        await _future;
+      },
+      child: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        children: [
+          // ── current level hero ──
+          LightCard(
+            gradient: T.goldGradient,
+            child: Column(
+              children: [
+                Icon(_iconFor(vip.currentIdx), size: 40, color: const Color(0xFF5A3A10)),
+                const SizedBox(height: 6),
+                Text(tr('feat.vip.current_member').replaceAll('{name}', tr(cur.key)),
+                    style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF5A3A10))),
+                const SizedBox(height: 4),
+                Text(tr('feat.vip.rebate_rate').replaceAll('{rate}', cur.rate),
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xCC5A3A10))),
+              ],
+            ),
+          ),
+
+          if (next != null) ...[
+            const SizedBox(height: 16),
+            _sectionLabel(tr('feat.vip.upgrade_progress')),
+            LightCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(tr('feat.vip.next').replaceAll('{name}', tr(next.key)),
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: T.inkMd)),
+                      Text(tr('feat.vip.month_min').replaceAll('{n}', _money.format(next.minStake)),
+                          style: const TextStyle(
+                              fontSize: 12, color: T.inkLo)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: vip.progress,
+                      minHeight: 8,
+                      backgroundColor: T.fill,
+                      valueColor: const AlwaysStoppedAnimation(T.brand),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(tr('feat.vip.bet_progress')
+                          .replaceAll('{cur}', _money.format(vip.monthStake))
+                          .replaceAll('{total}', _money.format(next.minStake)),
+                      style: const TextStyle(fontSize: 12, color: T.inkLo)),
+                ],
+              ),
+            ),
+          ] else ...[
+            const SizedBox(height: 16),
+            LightCard(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.workspace_premium_rounded, color: T.brandDeep, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(tr('feat.vip.maxed'),
+                          style: const TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w600, color: T.ink)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 16),
+
+          // ── tier list ──
+          _sectionLabel(tr('feat.vip.list')),
+          for (var i = 0; i < vip.tiers.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: LightCard(
+                border: i == vip.currentIdx
+                    ? Border.all(color: T.brand, width: 1.5)
+                    : null,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: i == vip.currentIdx
+                            ? T.brand.withValues(alpha: 0.12)
+                            : T.fill,
+                        borderRadius: BorderRadius.circular(T.rSm),
+                      ),
+                      alignment: Alignment.center,
+                      child: Icon(_iconFor(i),
+                          size: 22,
+                          color: i == vip.currentIdx ? T.brandDeep : T.inkLo),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(tr(vip.tiers[i].key),
+                                  style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: i == vip.currentIdx
+                                          ? T.brandDeep
+                                          : T.ink)),
+                              if (i == vip.currentIdx) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: T.brand.withValues(alpha: 0.12),
+                                    borderRadius:
+                                        BorderRadius.circular(4),
+                                  ),
+                                  child: Text(tr('feat.vip.current'),
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: T.brandDeep)),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                              tr('feat.vip.month_min').replaceAll('{n}', _money.format(vip.tiers[i].minStake)),
+                              style: const TextStyle(
+                                  fontSize: 12, color: T.inkLo)),
+                        ],
+                      ),
+                    ),
+                    Text(vip.tiers[i].rate,
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: i == vip.currentIdx
+                                ? T.brandDeep
+                                : T.inkMd)),
+                  ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 16),
+
+          // ── benefits ──
+          _sectionLabel(tr('feat.vip.benefits')),
+          LightCard(
+            child: Column(
+              children: [
+                _BenefitItem(
+                    icon: Icons.percent_rounded,
+                    text: tr('feat.vip.b1')),
+                const SizedBox(height: 10),
+                _BenefitItem(
+                    icon: Icons.bolt_rounded,
+                    text: tr('feat.vip.b2')),
+                const SizedBox(height: 10),
+                _BenefitItem(
+                    icon: Icons.card_giftcard_rounded,
+                    text: tr('feat.vip.b3')),
+                const SizedBox(height: 10),
+                _BenefitItem(
+                    icon: Icons.support_agent_rounded,
+                    text: tr('feat.vip.b4')),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
 }
 
 class _BenefitItem extends StatelessWidget {
@@ -975,12 +1036,7 @@ class CustomerServicePage extends StatelessWidget {
                     color: Colors.transparent,
                     child: InkWell(
                       onTap: () {
-                        // In production: launch Telegram deep link
-                        ScaffoldMessenger.of(context)
-                          ..hideCurrentSnackBar()
-                          ..showSnackBar(SnackBar(
-                              content: Text(tr('feat.cs.opening')),
-                              duration: const Duration(milliseconds: 1200)));
+                        Toast.show(context, tr('feat.cs.opening'));
                       },
                       borderRadius: BorderRadius.circular(T.rSm),
                       child: Center(

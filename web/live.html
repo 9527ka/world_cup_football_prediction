@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>赛事直播</title>
+<!--
+  Standalone HLS m3u8 player. Opened from the Flutter app via window.open
+  with ?url=<m3u8>. Safari plays HLS natively; Chromium/Firefox use hls.js
+  loaded from JSDelivr CDN.
+
+  Why a separate HTML file rather than embedding video_player into Flutter:
+   - The Flutter Web video_player still has rough edges with HLS — failures
+     are silent and platform-specific.
+   - Telegram WebApp / mobile Safari handle <video> tags fine.
+   - Keeping it static means we don't rebuild Flutter to tweak the player.
+-->
+<style>
+  /*
+    Loaded inside an iframe of the floating overlay (see live_overlay.js).
+    No internal chrome — the parent provides title + close/minimize/resize.
+    Stays compatible with direct navigation too (still has ?url=...).
+  */
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #000;
+    color: #fff; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    overscroll-behavior: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+    overflow: hidden;
+  }
+  video {
+    width: 100%; height: 100%;
+    background: #000;
+    object-fit: contain;
+  }
+  #status {
+    position: absolute; left: 0; right: 0; top: 50%;
+    text-align: center; font-size: 12px; color: #bbb;
+    pointer-events: auto; transform: translateY(-50%);
+  }
+  #status.error { color: #f88; }
+  #retry {
+    margin-top: 10px;
+    background: #2cd7fd; color: #000; border: none; padding: 6px 14px;
+    border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 700;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="player" controls playsinline autoplay muted></video>
+  <div id="status">正在加载…</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<script>
+(function() {
+  const params = new URLSearchParams(location.search);
+  const url = params.get('url');
+  const home = params.get('home') || '';
+  const away = params.get('away') || '';
+  if (home && away) {
+    document.title = home + ' vs ' + away + ' · 直播';
+  }
+  const video = document.getElementById('player');
+  const statusEl = document.getElementById('status');
+
+  function showStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    statusEl.className = isErr ? 'error' : '';
+    statusEl.style.display = msg ? 'block' : 'none';
+  }
+  function showError(msg) {
+    showStatus(msg, true);
+    statusEl.innerHTML = msg + '<br><button id="retry">重试</button>';
+    document.getElementById('retry').onclick = load;
+  }
+  function clearStatus() { showStatus('', false); }
+
+  if (!url) {
+    showError('未提供直播链接');
+    return;
+  }
+
+  let hls = null;
+  function load() {
+    clearStatus();
+    showStatus('正在加载…');
+    if (hls) { hls.destroy(); hls = null; }
+
+    // Safari / iOS native HLS support — use it directly, lower battery drain.
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url;
+      video.play().catch(() => {});
+      return;
+    }
+    // Chromium / Firefox: hls.js polyfill.
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls({
+        lowLatencyMode: true,
+        backBufferLength: 30,
+        maxBufferLength: 15,
+      });
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url));
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        clearStatus();
+        video.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          showError('网络错误,请检查连接');
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          // Try to recover
+          try { hls.recoverMediaError(); }
+          catch(e) { showError('视频解码失败'); }
+        } else {
+          showError('直播信号已断开<br>(可能赛事已结束或链接已过期)');
+        }
+      });
+      return;
+    }
+    showError('当前浏览器不支持 HLS 播放');
+  }
+
+  // Kick off + autoplay-with-sound after first user gesture.
+  load();
+  function unmute() {
+    video.muted = false;
+    document.removeEventListener('click', unmute);
+    document.removeEventListener('touchstart', unmute);
+  }
+  document.addEventListener('click', unmute, { once: true });
+  document.addEventListener('touchstart', unmute, { once: true });
+
+  video.addEventListener('playing', clearStatus);
+  video.addEventListener('waiting', () => showStatus('缓冲中…'));
+})();
+</script>
+</body>
+</html>

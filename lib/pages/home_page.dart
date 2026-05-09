@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -6,6 +8,8 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
+import '../services/stream_feed.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../utils/league_flags.dart';
 import '../utils/team_crests.dart';
@@ -13,6 +17,7 @@ import '../utils/team_names.dart';
 import '../widgets/light_card.dart';
 import 'feature_pages.dart';
 import 'match_detail_page.dart';
+import 'recent_settled_page.dart';
 
 /// 01 · 首页 — 浅色 7t 气质,USDT 余额 + Hero + 跑马灯 + 5 圆形入口
 /// + 唯一玩法(足球波胆)+ 热门赛事 + 合规牌照。
@@ -30,13 +35,31 @@ class _HomePageState extends State<HomePage> {
   int _marqueeIdx = 0;
   Timer? _marqueeTimer;
   List<HotMatch> _hot = const [];
+  List<MatchInfo> _settled = const [];
   UserStats? _stats;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadStreamFeed();
     widget.state.addListener(_onState);
+  }
+
+  Future<void> _loadStreamFeed() async {
+    await StreamFeed.instance.ensure(widget.state.api);
+    if (mounted) setState(() {}); // re-render hot cards so live ribbon shows
+  }
+
+  void _openStream(String url, String home, String away) {
+    try {
+      globalContext.callMethod(
+        'openLiveStream'.toJS,
+        url.toJS,
+        home.toJS,
+        away.toJS,
+      );
+    } catch (_) {}
   }
 
   @override
@@ -53,13 +76,15 @@ class _HomePageState extends State<HomePage> {
       final results = await Future.wait([
         widget.state.api.announcements(),
         widget.state.api.hotMatches(limit: 4),
+        widget.state.api.recentSettled(days: 3, limit: 8),
         if (widget.state.isAuthenticated) widget.state.api.getStats(),
       ]);
       if (!mounted) return;
       setState(() {
         _announcements = results[0] as List<String>;
         _hot = results[1] as List<HotMatch>;
-        if (widget.state.isAuthenticated) _stats = results[2] as UserStats;
+        _settled = results[2] as List<MatchInfo>;
+        if (widget.state.isAuthenticated) _stats = results[3] as UserStats;
       });
       if (_announcements.isNotEmpty) {
         _marqueeTimer?.cancel();
@@ -73,7 +98,14 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
+    // 取第一个 live stream(用作首页左侧悬浮直播按钮的目标)
+    // 优先 status==1(正在直播);没有则降级到任意有 streamUrl 的缓存流。
+    final liveStreams = StreamFeed.instance.liveSnapshot();
+    final candidates =
+        liveStreams.isNotEmpty ? liveStreams : StreamFeed.instance.snapshot();
+    final firstLive = candidates.isEmpty ? null : candidates.first;
+
+    final scrollable = RefreshIndicator(
       onRefresh: _load,
       color: T.brandDeep,
       child: ListView(
@@ -98,6 +130,32 @@ class _HomePageState extends State<HomePage> {
                     style: const TextStyle(color: T.inkLo, fontSize: 12)),
               ),
             ),
+          if (_settled.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            SectionTitle(
+              title: tr('home.recent_results'),
+              subtitle: tr('home.recent_results_sub'),
+              trailing: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => AntiSpam.guard('nav_settled', () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => RecentSettledPage(state: widget.state)),
+                  );
+                }),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  child: Text(tr('home.view_all'),
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: T.brandDeep)),
+                ),
+              ),
+            ),
+            ..._settled.map(_settledCard),
+          ],
           const SizedBox(height: 24),
           _coins(),
           const SizedBox(height: 16),
@@ -105,6 +163,65 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 24),
         ],
       ),
+    );
+
+    // No live stream cached → no floating button needed.
+    if (firstLive == null) return scrollable;
+
+    // Stack the scrollable with a left-edge floating live ribbon.
+    // Tap → open the FIRST live stream (per upstream homeList order).
+    return Stack(
+      children: [
+        scrollable,
+        Positioned(
+          left: 0,
+          top: 200, // below hero banner
+          child: GestureDetector(
+            onTap: () => _openStream(
+                firstLive.streamUrl, firstLive.homeTeam, firstLive.awayTeam),
+            child: Container(
+              width: 26,
+              height: 88,
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(6),
+                  bottomRight: Radius.circular(6),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.20),
+                    blurRadius: 6,
+                    offset: const Offset(2, 3),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(6),
+                  bottomRight: Radius.circular(6),
+                ),
+                child: Image.asset(
+                  'assets/icons/live_stream.png',
+                  fit: BoxFit.fill,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: const Color(0xFFE53935),
+                    alignment: Alignment.center,
+                    child: const RotatedBox(
+                      quarterTurns: 1,
+                      child: Text('LIVE',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1)),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -388,7 +505,7 @@ class _HomePageState extends State<HomePage> {
         page = const RebatePage();
         break;
       case 'home.vip':
-        page = const VipPage();
+        page = VipPage(state: widget.state);
         break;
       case 'home.service':
         page = const CustomerServicePage();
@@ -579,20 +696,109 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // ── 已结束比赛卡片(只显示比分 + 比赛日 + 联赛)────────────────────────────
+  Widget _settledCard(MatchInfo m) {
+    final fmt = DateFormat('MM-dd HH:mm');
+    final sc = m.scores;
+    final hg = sc?.home ?? 0;
+    final ag = sc?.away ?? 0;
+    final homeWon = hg > ag;
+    final awayWon = ag > hg;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: LightCard(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        onTap: () => AntiSpam.guard('match_detail_${m.id}', () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => MatchDetailPage(state: widget.state, match: m)),
+          );
+        }),
+        child: Row(
+          children: [
+            // 联赛 + 时间
+            SizedBox(
+              width: 78,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(localizedLeague(m.leagueName),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: T.inkLo)),
+                  const SizedBox(height: 2),
+                  Text(fmt.format(m.date),
+                      style: const TextStyle(fontSize: 9, color: T.inkLo)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // 主队
+            Expanded(
+              child: Text(localizedTeam(m.home),
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: homeWon ? T.upDark : T.ink)),
+            ),
+            // 比分
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEEF2F7),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text('$hg : $ag',
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      fontFamily: T.fontMono,
+                      color: T.ink)),
+            ),
+            // 客队
+            Expanded(
+              child: Text(localizedTeam(m.away),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: awayWon ? T.upDark : T.ink)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── hot match card ────────────────────────────────────────────────
   Widget _hotCard(HotMatch hm) {
     final m = hm.match;
     final live = m.isLive;
     final fmt = DateFormat('MM-dd HH:mm');
-    return Padding(
+    final feed = StreamFeed.instance.find(m.home, m.away, m.date);
+    final streamUrl = feed?.streamUrl ?? m.live?.streamUrl ?? '';
+    final hasStream = streamUrl.isNotEmpty;
+
+    final card = Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
       child: LightCard(
         padding: const EdgeInsets.all(12),
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(
-              builder: (_) => MatchDetailPage(state: widget.state, match: m)),
-        ),
+        onTap: () => AntiSpam.guard('match_detail_${m.id}', () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => MatchDetailPage(state: widget.state, match: m)),
+          );
+        }),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -743,6 +949,65 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
       ),
+    );
+
+    if (!hasStream) return card;
+    // Overlay a left-side floating live ribbon (same asset/spec as match list).
+    // Stack ensures the ribbon docks over the card edge without disturbing
+    // the card's internal padding.
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        card,
+        Positioned(
+          left: 14, // matches LightCard outer padding so ribbon hugs card edge
+          top: 6,
+          bottom: 16,
+          width: 22,
+          child: GestureDetector(
+            onTap: () => _openStream(
+                streamUrl, localizedTeam(m.home), localizedTeam(m.away)),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(4),
+                  bottomRight: Radius.circular(4),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    blurRadius: 4,
+                    offset: const Offset(1, 2),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(4),
+                  bottomRight: Radius.circular(4),
+                ),
+                child: Image.asset(
+                  'assets/icons/live_stream.png',
+                  fit: BoxFit.fill,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: const Color(0xFFE53935),
+                    alignment: Alignment.center,
+                    child: const RotatedBox(
+                      quarterTurns: 1,
+                      child: Text('LIVE',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1)),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

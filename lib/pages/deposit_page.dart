@@ -5,6 +5,7 @@ import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/file_picker_web.dart' as file_picker;
 import '../services/i18n.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/chain_icon.dart';
 import '../widgets/light_card.dart';
@@ -360,8 +361,7 @@ class _DepositPageState extends State<DepositPage> {
                       ? () {
                           Clipboard.setData(
                               ClipboardData(text: _currentAddress()));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(tr('dep.addr_copied'))));
+                          Toast.show(context, tr('dep.addr_copied'));
                         }
                       : null,
                   icon: const Icon(Icons.copy, size: 14),

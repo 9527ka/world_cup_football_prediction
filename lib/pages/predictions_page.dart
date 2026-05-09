@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../utils/league_flags.dart';
 import '../utils/team_crests.dart';
@@ -380,20 +381,12 @@ class _PredictionsPageState extends State<PredictionsPage> {
     try {
       final result = await widget.state.api.cashOutPrediction(pred.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(tr('pred.cashout_ok').replaceAll('{n}', result.cashedOut.toStringAsFixed(2))),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: T.upDark,
-      ));
-      // 触发列表 + 余额刷新
+      Toast.success(context,
+          tr('pred.cashout_ok').replaceAll('{n}', result.cashedOut.toStringAsFixed(2)));
       setState(() => _future = _load());
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(e.toString()),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: T.down,
-      ));
+      Toast.error(context, e.toString());
     }
   }
 
@@ -419,10 +412,26 @@ class _PredictionsPageState extends State<PredictionsPage> {
               child: Text(tr('common.cancel'), style: const TextStyle(color: T.inkLo)),
             ),
             TextButton(
-              onPressed: () {
+              onPressed: () async {
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(tr('pred.cancel_soon'))));
+                try {
+                  final res = await widget.state.api.cancelPrediction(b.prediction.id);
+                  if (!mounted) return;
+                  // 重载列表(余额由 stats hero 卡内 wallet API 自带刷新)
+                  setState(() => _future = _load());
+                  Toast.success(context,
+                      tr('pred.cancel_ok').replaceAll('{n}', res.refundedAmount.toStringAsFixed(2)));
+                } catch (e) {
+                  if (!mounted) return;
+                  final msg = e.toString();
+                  String label = tr('pred.cancel_failed');
+                  if (msg.contains('too close to kickoff')) {
+                    label = tr('pred.cancel_too_late');
+                  } else if (msg.contains('not pending')) {
+                    label = tr('pred.cancel_not_pending');
+                  }
+                  Toast.error(context, '$label · $msg');
+                }
               },
               child: Text(tr('pred.cancel_confirm'), style: const TextStyle(color: T.down)),
             ),
@@ -434,22 +443,24 @@ class _PredictionsPageState extends State<PredictionsPage> {
     }
   }
 
-  void _goMatchDetail(BetRow b) async {
-    try {
-      final match = await widget.state.api.getMatch(b.prediction.matchId);
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => MatchDetailPage(state: widget.state, match: match),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(tr('pred.load_match_failed').replaceAll('{err}', '$e'))));
+  void _goMatchDetail(BetRow b) {
+    AntiSpam.guardAsync('match_detail_${b.prediction.matchId}', () async {
+      try {
+        final match = await widget.state.api.getMatch(b.prediction.matchId);
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => MatchDetailPage(state: widget.state, match: match),
+          ),
+        );
+      } catch (e) {
+        if (mounted) {
+          Toast.error(
+              context, tr('pred.load_match_failed').replaceAll('{err}', '$e'));
+        }
       }
-    }
+    });
   }
 
   /// Top-level segmented control: Singles vs Parlays.
@@ -812,7 +823,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               fontWeight: FontWeight.w600)),
                       const SizedBox(height: 2),
                       Text(
-                        isLost ? '—' : (isWon ? '+' : '') + NumberFormat('#,##0').format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
+                        isLost ? '—' : (isWon ? '+' : '') + NumberFormat('#,##0.00').format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w800,
@@ -1016,15 +1027,101 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                 Text('-${NumberFormat('#,##0').format(p.stake)} U',
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w800, color: T.down))
-              else
+              else ...[
                 Text(fmt.format(p.createdAt),
                     style: const TextStyle(
                         fontSize: 11, color: T.inkSubtle, fontFamily: T.fontMono)),
+                // 提前结算按钮:只要 status=pending 且没有 lost leg 就可以
+                if (p.legs.every((l) => l.legStatus != 'lost') &&
+                    p.legs.any((l) => l.legStatus == 'pending')) ...[
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    onPressed: () => _confirmParlayCashout(p),
+                    icon: const Icon(Icons.flash_on, size: 14, color: T.brandDeep),
+                    label: Text(tr('pred.cashout_btn'),
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w800, color: T.brandDeep)),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                      minimumSize: const Size(0, 28),
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: const Color(0x142CD7FD),
+                    ),
+                  ),
+                ],
+              ],
             ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _confirmParlayCashout(Parlay p) async {
+    // 估算上下界:全 pending 时 stake×0.92 是绝对下限;
+    // 全 won 已 cashed_out 不在此分支,所以这里只展示 stake×0.92 ~ stake×totalOdds×0.92
+    final estimateLow = p.stake * 0.92;
+    final estimateHigh = p.stake * p.totalOdds * 0.92;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(tr('pred.cashout_title'),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${tr('pred.parlay_label')} #${p.id} · ${p.legs.length} ${tr('pred.legs_label')}',
+                style: const TextStyle(fontSize: 13, color: T.inkMd)),
+            const SizedBox(height: 4),
+            Text('${tr('pred.combo_odds')} ${p.totalOdds.toStringAsFixed(2)} · '
+                '${tr('pred.stake_label')} ${p.stake.toStringAsFixed(0)} USDT',
+                style: const TextStyle(fontSize: 13, color: T.inkMd)),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0x14F5B544),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                tr('pred.cashout_desc'),
+                style: const TextStyle(fontSize: 11, color: Color(0xFFC7861E), fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${tr('pred.cashout_estimate')}: ${estimateLow.toStringAsFixed(2)} ~ ${estimateHigh.toStringAsFixed(2)} USDT',
+              style: const TextStyle(fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(tr('pred.cashout_cancel'), style: const TextStyle(color: T.inkLo)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(tr('pred.cashout_confirm'),
+                style: const TextStyle(color: T.brandDeep, fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final result = await widget.state.api.cashOutParlay(p.id);
+      if (!mounted) return;
+      Toast.success(context,
+          tr('pred.cashout_ok').replaceAll('{n}', result.cashedOut.toStringAsFixed(2)));
+      setState(() => _future = _load());
+    } catch (e) {
+      if (!mounted) return;
+      Toast.error(context, e.toString());
+    }
   }
 }
 
@@ -1049,6 +1146,21 @@ String _selectionLabel(String marketType, String score) {
     case MarketType.btts:
       if (score == 'yes') return tr('pred.btts_yes');
       if (score == 'no') return tr('pred.btts_no');
+      return score;
+    case MarketType.matchWinner:
+      if (score == 'home') return '${tr('detail.winner_title')} · ${tr('detail.win_home')}';
+      if (score == 'draw') return '${tr('detail.winner_title')} · ${tr('detail.draw')}';
+      if (score == 'away') return '${tr('detail.winner_title')} · ${tr('detail.win_away')}';
+      return score;
+    case MarketType.asianHandicap:
+      // score 形如 "home@-0.5" / "away@+1.5"
+      final at = score.lastIndexOf('@');
+      if (at > 0 && at < score.length - 1) {
+        final side = score.substring(0, at);
+        final line = score.substring(at + 1);
+        final sideLabel = side == 'home' ? tr('detail.win_home') : tr('detail.win_away');
+        return '${tr('detail.handicap_title')} · $sideLabel $line';
+      }
       return score;
     case MarketType.correctScore:
     default:

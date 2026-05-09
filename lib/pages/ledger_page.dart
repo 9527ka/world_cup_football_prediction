@@ -7,7 +7,7 @@ import '../services/i18n.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
 
-/// 10 · 资金明细 — 月度统计 + 类型筛选 + 按天分组列表。
+/// 10 · 资金明细 — 月度统计 + 类型筛选 + 按天分组列表 + 分页加载。
 class LedgerPage extends StatefulWidget {
   const LedgerPage({super.key, required this.state});
   final AppState state;
@@ -17,31 +17,91 @@ class LedgerPage extends StatefulWidget {
 }
 
 class _LedgerPageState extends State<LedgerPage> {
+  static const _pageSize = 50;
+
   String _filter = 'all';
-  late Future<_LedgerBundle> _future;
+  List<LedgerEntry> _entries = [];
+  String _nextCursor = '';
+  UserStats? _stats;
+  bool _initialLoading = true;
+  bool _loadingMore = false;
+  String? _error;
+
+  final ScrollController _scroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _loadInitial();
+    _scroll.addListener(_onScroll);
   }
 
-  Future<_LedgerBundle> _load() async {
-    final results = await Future.wait([
-      widget.state.api.getLedger(type: _filter, limit: 200),
-      widget.state.api.getStats(),
-    ]);
-    return _LedgerBundle(
-      entries: results[0] as List<LedgerEntry>,
-      stats: results[1] as UserStats,
-    );
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_loadingMore || _nextCursor.isEmpty) return;
+    if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 200) {
+      _loadMore();
+    }
+  }
+
+  Future<void> _loadInitial() async {
+    setState(() {
+      _initialLoading = true;
+      _error = null;
+      _entries = [];
+      _nextCursor = '';
+    });
+    try {
+      final results = await Future.wait([
+        widget.state.api.getLedger(type: _filter, limit: _pageSize),
+        widget.state.api.getStats(),
+      ]);
+      final page = results[0] as LedgerResult;
+      if (!mounted) return;
+      setState(() {
+        _entries = page.items;
+        _nextCursor = page.nextCursor;
+        _stats = results[1] as UserStats;
+        _initialLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _initialLoading = false;
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || _nextCursor.isEmpty) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.state.api.getLedger(
+        type: _filter,
+        limit: _pageSize,
+        before: _nextCursor,
+      );
+      if (!mounted) return;
+      setState(() {
+        _entries.addAll(page.items);
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
   }
 
   void _switch(String f) {
-    setState(() {
-      _filter = f;
-      _future = _load();
-    });
+    _filter = f;
+    _loadInitial();
   }
 
   @override
@@ -51,47 +111,46 @@ class _LedgerPageState extends State<LedgerPage> {
       body: Container(
         decoration: const BoxDecoration(gradient: T.pageGradient),
         child: SafeArea(
-          child: FutureBuilder<_LedgerBundle>(
-            future: _future,
-            builder: (_, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(
-                    child: CircularProgressIndicator(color: T.brandDeep));
-              }
-              if (snap.hasError) {
-                return Center(
-                  child: Text(tr('load_failed').replaceAll('{err}', '${snap.error}'),
-                      style: const TextStyle(color: T.down)),
-                );
-              }
-              final bundle = snap.data!;
-              return RefreshIndicator(
-                color: T.brandDeep,
-                onRefresh: () async {
-                  setState(() => _future = _load());
-                  await _future;
-                },
-                child: ListView(
-                  padding: EdgeInsets.zero,
-                  children: [
-                    _topBar(),
-                    _statRow(bundle.stats),
-                    _filters(),
-                    if (bundle.entries.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 40),
-                        child: Center(
-                            child: Text(tr('ledger.empty'),
-                                style: const TextStyle(color: T.inkLo, fontSize: 13))),
-                      )
-                    else
-                      ..._buildGrouped(bundle.entries),
-                    const SizedBox(height: 32),
-                  ],
-                ),
-              );
-            },
-          ),
+          child: _initialLoading
+              ? const Center(child: CircularProgressIndicator(color: T.brandDeep))
+              : _error != null
+                  ? Center(
+                      child: Text(tr('load_failed').replaceAll('{err}', _error!),
+                          style: const TextStyle(color: T.down)))
+                  : RefreshIndicator(
+                      color: T.brandDeep,
+                      onRefresh: () async => _loadInitial(),
+                      child: ListView(
+                        controller: _scroll,
+                        padding: EdgeInsets.zero,
+                        children: [
+                          _topBar(),
+                          if (_stats != null) _statRow(_stats!),
+                          _filters(),
+                          if (_entries.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 40),
+                              child: Center(
+                                  child: Text(tr('ledger.empty'),
+                                      style: const TextStyle(
+                                          color: T.inkLo, fontSize: 13))),
+                            )
+                          else
+                            ..._buildGrouped(_entries),
+                          if (_loadingMore)
+                            const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(
+                                  child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: T.brandDeep))),
+                            ),
+                          const SizedBox(height: 32),
+                        ],
+                      ),
+                    ),
         ),
       ),
     );
@@ -325,12 +384,6 @@ String _titleFor(LedgerEntry e) {
     default:
       return e.title;
   }
-}
-
-class _LedgerBundle {
-  final List<LedgerEntry> entries;
-  final UserStats stats;
-  _LedgerBundle({required this.entries, required this.stats});
 }
 
 class _TypeCfg {

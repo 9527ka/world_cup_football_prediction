@@ -50,6 +50,9 @@
       }
     } catch (e) { console.warn('Telegram WebApp init failed', e); }
   </script>
+  <!-- Floating live-stream overlay (defines window.openLiveStream / closeLiveStream).
+       Loaded eagerly so Flutter's first openStream call has the JS bridge ready. -->
+  <script src="live_overlay.js"></script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

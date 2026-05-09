@@ -322,7 +322,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
               fontSize: 11, fontWeight: FontWeight.w800, color: T.ink),
         ),
         const SizedBox(height: 2),
-        Text('${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0').format(u.payout)} U',
+        Text('${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0.00').format(u.payout)} U',
             style: TextStyle(
                 fontSize: rank == 1 ? 14 : 12,
                 fontWeight: FontWeight.w800,
@@ -475,7 +475,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                '${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0').format(u.payout)}',
+                '${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0.00').format(u.payout)}',
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w800,

@@ -5,6 +5,7 @@ import '../models/match.dart';
 import '../services/api_client.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
+import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
 import 'deposit_page.dart';
@@ -23,8 +24,14 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
+class _ProfileBundle {
+  final UserStats stats;
+  final VipStatus? vip; // null when user not authenticated
+  const _ProfileBundle(this.stats, this.vip);
+}
+
 class _ProfilePageState extends State<ProfilePage> {
-  late Future<UserStats> _future;
+  late Future<_ProfileBundle> _future;
 
   @override
   void initState() {
@@ -32,11 +39,18 @@ class _ProfilePageState extends State<ProfilePage> {
     _future = _load();
   }
 
-  Future<UserStats> _load() async {
+  Future<_ProfileBundle> _load() async {
     if (!widget.state.isAuthenticated) {
-      return UserStats.empty();
+      return _ProfileBundle(UserStats.empty(), null);
     }
-    return widget.state.api.getStats();
+    final stats = await widget.state.api.getStats();
+    VipStatus? vip;
+    try {
+      vip = await widget.state.api.getVip();
+    } catch (_) {
+      // 401/降级时不阻塞,只是不显示 VIP 徽章
+    }
+    return _ProfileBundle(stats, vip);
   }
 
   @override
@@ -48,10 +62,12 @@ class _ProfilePageState extends State<ProfilePage> {
         setState(() => _future = _load());
         await _future;
       },
-      child: FutureBuilder<UserStats>(
+      child: FutureBuilder<_ProfileBundle>(
         future: _future,
         builder: (_, snap) {
-          final s = snap.data ?? UserStats.empty();
+          final bundle = snap.data;
+          final s = bundle?.stats ?? UserStats.empty();
+          final vip = bundle?.vip;
           final authErr = snap.hasError &&
               snap.error is ApiException &&
               (snap.error as ApiException).statusCode == 401;
@@ -59,7 +75,7 @@ class _ProfilePageState extends State<ProfilePage> {
             padding: EdgeInsets.zero,
             children: [
               const SizedBox(height: 12),
-              _profileHeader(user),
+              _profileHeader(user, vip),
               if (authErr) _authErrorBanner() else _walletCard(s),
               _statsRow(s),
               _menuGroupBets(s),
@@ -91,7 +107,7 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _profileHeader(Map<String, dynamic>? user) {
+  Widget _profileHeader(Map<String, dynamic>? user, VipStatus? vip) {
     final username = user == null
         ? tr('profile.guest')
         : (user['firstName'] as String?)?.isNotEmpty == true
@@ -147,6 +163,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           fontWeight: FontWeight.w600,
                           fontFamily: T.fontMono)),
                   const SizedBox(height: 4),
+                  // VIP 徽章 — 优先用 /api/me/vip 实时数据,未到货时回退到默认 (普通会员 0.3%)
                   Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -155,12 +172,45 @@ class _ProfilePageState extends State<ProfilePage> {
                       border: Border.all(color: const Color(0x4DD9AB7A)),
                       borderRadius: BorderRadius.circular(999),
                     ),
-                    child: Text(tr('profile.vip_badge'),
-                        style: const TextStyle(
-                            fontSize: 9,
-                            color: Color(0xFFA87644),
-                            fontWeight: FontWeight.w800)),
+                    child: Text(
+                      vip == null
+                          ? tr('profile.vip_badge')
+                          : '${tr(vip.currentTier.key)} · ${tr('profile.vip_rebate')} ${vip.currentTier.rate}',
+                      style: const TextStyle(
+                          fontSize: 9,
+                          color: Color(0xFFA87644),
+                          fontWeight: FontWeight.w800),
+                    ),
                   ),
+                  if (vip != null && vip.nextTier != null) ...[
+                    const SizedBox(height: 4),
+                    // 进度条 + 距离下一档剩多少
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: vip.progress,
+                              minHeight: 4,
+                              backgroundColor: const Color(0x14D9AB7A),
+                              valueColor: const AlwaysStoppedAnimation(Color(0xFFD9AB7A)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          tr('profile.vip_to_next')
+                              .replaceAll('{tier}', tr(vip.nextTier!.key))
+                              .replaceAll('{n}', vip.needToNext.toStringAsFixed(0)),
+                          style: const TextStyle(
+                              fontSize: 9,
+                              color: Color(0xFFA87644),
+                              fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -356,7 +406,7 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Row(
           children: [
             _heroStat(tr('profile.month_pl'),
-                (s.monthProfit >= 0 ? '+' : '') + NumberFormat('#,##0').format(s.monthProfit),
+                (s.monthProfit >= 0 ? '+' : '') + NumberFormat('#,##0.00').format(s.monthProfit),
                 s.monthProfit >= 0 ? T.upDark : T.down),
             _divider(),
             _heroStat(tr('profile.hit_rate'),
@@ -405,7 +455,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 T.brand, T.brandDeep, _goBets),
             _menuItem(tr('profile.leaderboard'),
                 tr('profile.leaderboard_pl')
-                    .replaceAll('{n}', NumberFormat('#,##0').format(s.monthProfit)),
+                    .replaceAll('{n}', NumberFormat('#,##0.00').format(s.monthProfit)),
                 Icons.emoji_events_outlined,
                 const Color(0xFFFFD66E), T.gold, _goRank),
             _menuItem(tr('profile.rebate_center'), tr('profile.rebate_pending'), Icons.percent,
@@ -521,19 +571,18 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       );
 
-  void _snack(String m) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  void _snack(String m) => Toast.show(context, m);
 
-  void _goRebate() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const RebatePage()));
-  void _goShareEarn() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const ShareEarnPage()));
-  void _goVip() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const VipPage()));
-  void _goRules() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const RulesPage()));
-  void _goService() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const CustomerServicePage()));
+  void _goRebate() => AntiSpam.guard('nav_rebate', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => const RebatePage())));
+  void _goShareEarn() => AntiSpam.guard('nav_share', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => const ShareEarnPage())));
+  void _goVip() => AntiSpam.guard('nav_vip', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => VipPage(state: widget.state))));
+  void _goRules() => AntiSpam.guard('nav_rules', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => const RulesPage())));
+  void _goService() => AntiSpam.guard('nav_service', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => const CustomerServicePage())));
   void _goAbout() => _showAbout();
 
   void _showAbout() {
@@ -711,14 +760,14 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  void _goDeposit() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => DepositPage(state: widget.state)));
-  void _goWithdraw() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => WithdrawPage(state: widget.state)));
-  void _goLedger() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => LedgerPage(state: widget.state)));
-  void _goBets() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => PredictionsPage(state: widget.state)));
-  void _goRank() => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => LeaderboardPage(state: widget.state)));
+  void _goDeposit() => AntiSpam.guard('nav_deposit', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => DepositPage(state: widget.state))));
+  void _goWithdraw() => AntiSpam.guard('nav_withdraw', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => WithdrawPage(state: widget.state))));
+  void _goLedger() => AntiSpam.guard('nav_ledger', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => LedgerPage(state: widget.state))));
+  void _goBets() => AntiSpam.guard('nav_bets', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => PredictionsPage(state: widget.state))));
+  void _goRank() => AntiSpam.guard('nav_rank', () => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => LeaderboardPage(state: widget.state))));
 }

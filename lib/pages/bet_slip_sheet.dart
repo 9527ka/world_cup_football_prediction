@@ -92,6 +92,22 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
                 if (s.score == 'no') newPrice = odds.btts!.no;
               }
               break;
+            case MarketType.matchWinner:
+              if (odds.moneyLine != null) {
+                if (s.score == 'home') newPrice = odds.moneyLine!.home;
+                if (s.score == 'draw') newPrice = odds.moneyLine!.draw;
+                if (s.score == 'away') newPrice = odds.moneyLine!.away;
+              }
+              break;
+            case MarketType.asianHandicap:
+              if (odds.handicap != null) {
+                // s.score may be encoded "home@-0.5" — extract side
+                final at = s.score.lastIndexOf('@');
+                final side = at > 0 ? s.score.substring(0, at) : s.score;
+                if (side == 'home') newPrice = odds.handicap!.home;
+                if (side == 'away') newPrice = odds.handicap!.away;
+              }
+              break;
           }
           if (newPrice != null && slip.updatePrice(s.key, newPrice)) {
             anyChanged = true;

@@ -1,0 +1,51 @@
+# ─── macOS / Windows / Linux 系统文件 ───────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ─── Flutter / Dart 构建产物与缓存 ────────────────────────────────
+# 这些都是工具自动生成,任何机器都能重新跑出来,不该入库
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter/
+
+# 生成的本地化 / freezed / json_serializable 等代码(本仓库目前没用,留作以后)
+*.g.dart
+*.freezed.dart
+*.gr.dart
+# (上面三条要按需开启 — 目前的代码没生成文件,先注释)
+
+# ─── 测试 / 覆盖率 ─────────────────────────────────────────────────
+coverage/
+*.lcov
+test/.test_coverage.dart
+
+# ─── IDE / 编辑器 ──────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+
+# ─── Flutter Web 部署相关 ────────────────────────────────────────────
+# scripts/build-web.sh 跑完会注入版本号到 build/web/index.html — 整个 build/ 已忽略
+
+# ─── 环境变量 / 密钥(若有) ─────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ─── 其他 ───────────────────────────────────────────────────────────
+# 本地 doctor 输出 / 临时日志
+*.log
+.last_build_id

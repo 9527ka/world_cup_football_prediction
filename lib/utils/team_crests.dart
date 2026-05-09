@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:country_flags/country_flags.dart';
 
+import '../services/team_overrides.dart';
 import 'league_flags.dart';
 
 /// 队伍徽章 / 国旗显示。优先用 api-sports.io CDN 上的真实俱乐部徽章
@@ -96,6 +97,90 @@ const Map<String, int> _apiSportsTeamID = {
   'VFL Wolfsburg':            161,
   '1. FC Heidenheim':         180,
 
+  // ─── China - Chinese Super League (中超) ──────────────────────────────
+  // 已 curl 验证返回非 90381 占位的 PNG。剩余 8 队没找到稳定的 api-sports ID,
+  // 退到中国国旗 fallback。
+  'Beijing Guoan':            832,   // 21538b
+  'Shanghai Shenhua FC':      833,   // 9665b  ← 视觉对比验证
+  'Shandong Taishan FC':      836,   // 23111b
+  'Shanghai Port FC':         837,   // 33002b
+  'Henan':                    2737,  // 3024b
+  'Zhejiang FC':              4358,  // 25032b
+  'Tianjin Jinmen Tiger':     4361,  // 23738b
+  'Wuhan Three Towns FC':     5183,  // 16110b
+  'Chengdu Rongcheng':        5188,  // 24357b
+  // 中甲 China League 1
+  'Changchun Yatai':          834,   // 8126b
+
+  // ─── Japan - J.League (J1 + J2) ───────────────────────────────────────
+  // 通过下载 PNG + 视觉对比逐个核实。原代码里 14 个 ID 全错了,以下是更正版。
+  // J1
+  'Kashiwa Reysol':            281,
+  'Sanfrecce Hiroshima':       282,
+  'Shimizu S-Pulse':           283,
+  'Shonan Bellmare':           284,
+  'Urawa Red Diamonds':        287,
+  'Nagoya Grampus':            288,
+  'Vissel Kobe':               289,
+  'Kashima Antlers':           290,
+  'Cerezo Osaka':              291,
+  'FC Tokyo':                  292,
+  'Gamba Osaka':               293,
+  'Kawasaki Frontale':         294,
+  'Yokohama F Marinos':        296,
+  'Kyoto Sanga FC':            302,
+  'Machida Zelvia':            303,
+  'Tokyo Verdy':               306,
+  'Yokohama FC':               307,
+  'Fagiano Okayama':           310,
+  'Avispa Fukuoka':            316,
+  // J2 / 升降级常客
+  'Jubilo Iwata':              280,
+  'V-Varen Nagasaki':          285,
+  'Vegalta Sendai':            286,
+  'Sagan Tosu':                295,
+  'FC Gifu':                   297,
+  'Oita Trinita':              298,
+  'Tokushima Vortis':          299,
+  'Zweigen Kanazawa':          300,
+  'Matsumoto Yamaga FC':       304,
+  'Mito Hollyhock':            305,
+  'Ventforet Kofu':            308,
+  'Renofa Yamaguchi':          309,
+  'Albirex Niigata':           311,
+  'Montedio Yamagata':         312,
+  'RB Omiya Ardija':           313,
+  'Roasso Kumamoto':           314,
+  'Tochigi SC':                315,
+  'Kamatamare Sanuki':         317,
+  'Ehime FC':                  318,
+
+  // ─── Norway - Eliteserien (挪威超) ─────────────────────────────────────
+  'SK Brann':                  319,
+  'Kristiansund BK':           320,
+  'Lillestroem SK':            321,
+  'Tromsoe IL':                325,
+  'Vaalerenga IF':             326,
+  'Bodoe/Glimt':               327,
+  'Molde FK':                  329,
+  'Rosenborg BK':              331,
+  'Sandefjord Fotball':        332,
+  'Sarpsborg 08':              333,
+  'IK Start':                  334,
+
+  // ─── USA - MLS (美职) ──────────────────────────────────────────────────
+  // 通过下载 PNG + 视觉对比核实。剩余 20 队没找到 ID,退到美国国旗 fallback。
+  'San Jose Earthquakes':      1596,
+  'Orlando City SC':            1598,
+  'Houston Dynamo':            1600,
+  'Toronto FC':                1601,
+  'Vancouver Whitecaps FC':    1603,
+  'Chicago Fire':              1607,
+  'CF Montreal':               1614,
+  'Inter Miami CF':            9568,
+  'Nashville SC':              9569,
+  'Austin FC':                 16489,
+
   // ─── France - Ligue 1 ──────────────────────────────────────────────────
   'AS Monaco':           91,
   'Olympique Marseille': 81,
@@ -117,12 +202,31 @@ const Map<String, int> _apiSportsTeamID = {
   'Paris FC':            93,
 };
 
+/// 144 个本地打包的徽章 ID(由 scripts/download_team_logos 下载并验证非占位)。
+/// 在这个集合里的优先用 assets/team_logos/{id}.png(零延迟,免 CDN 依赖,
+/// 国内不被 Cloudflare 速率限制),其它仍走 CDN 兜底。
+const _localLogoIDs = <int>{
+  34, 35, 36, 39, 40, 42, 44, 47, 48, 49, 50, 51, 63, 66,
+  77, 79, 80, 83, 84, 85, 91, 93, 94, 95, 96, 97, 106, 111, 116,
+  160, 161, 162, 163, 164, 165, 167, 168, 169, 170, 172, 173, 176, 180, 182, 186, 192,
+  280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296,
+  297, 298, 299, 300, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314,
+  315, 316, 317, 318, 319, 320, 321, 325, 326, 327, 329, 331, 332, 333, 334,
+  489, 490, 494, 495, 497, 499, 500, 503, 505, 523,
+  529, 530, 531, 532, 533, 536, 538, 539, 540, 541, 542, 543, 546, 547, 548,
+  727, 728, 746, 797, 798,
+  832, 833, 834, 836, 837, 867,
+  1598, 1600, 1601, 1603, 1607, 1614,
+  2737, 4358, 4361, 5183, 5188, 7398, 16489,
+};
+
 /// 圆角矩形的队伍徽章 / 国旗。
 ///
-/// 优先级:
-///   1. 有 api-sports ID 映射 → 加载 CDN 上的俱乐部 PNG 徽章
-///   2. 网络失败或没映射 → 该队联赛对应国家国旗
-///   3. 都没有 → 灰色 globe 占位
+/// 加载顺序:
+///   1. 本地 assets/team_logos/{id}.png — 144 个验证过的(零网络)
+///   2. api-sports.io CDN(给将来新加未打包的)
+///   3. 联赛对应国家国旗
+///   4. 灰色 globe 占位
 class TeamCrest extends StatelessWidget {
   const TeamCrest({
     super.key,
@@ -139,8 +243,29 @@ class TeamCrest extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final id = _apiSportsTeamID[name];
     final fallback = _flagFallback();
+    // Admin-uploaded override takes top priority.
+    final override = TeamOverrides.instance.logoUrl(name);
+    if (override != null) {
+      return SizedBox(
+        width: size,
+        height: size,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(borderRadius),
+          child: Container(
+            color: Colors.white,
+            padding: EdgeInsets.all(size * 0.08),
+            child: Image.network(
+              override,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => fallback,
+              loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
+            ),
+          ),
+        ),
+      );
+    }
+    final id = _apiSportsTeamID[name];
     if (id == null) return fallback;
     return SizedBox(
       width: size,
@@ -150,17 +275,24 @@ class TeamCrest extends StatelessWidget {
         child: Container(
           color: Colors.white,
           padding: EdgeInsets.all(size * 0.08),
-          child: Image.network(
-            'https://media.api-sports.io/football/teams/$id.png',
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => fallback,
-            // While loading, render the flag silhouette so layout doesn't
-            // jump and the user gets context immediately.
-            loadingBuilder: (ctx, child, p) =>
-                p == null ? child : fallback,
-          ),
+          child: _localLogoIDs.contains(id)
+              ? Image.asset(
+                  'assets/team_logos/$id.png',
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => _cdnImage(id, fallback),
+                )
+              : _cdnImage(id, fallback),
         ),
       ),
+    );
+  }
+
+  Widget _cdnImage(int id, Widget fallback) {
+    return Image.network(
+      'https://media.api-sports.io/football/teams/$id.png',
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => fallback,
+      loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
     );
   }
 
