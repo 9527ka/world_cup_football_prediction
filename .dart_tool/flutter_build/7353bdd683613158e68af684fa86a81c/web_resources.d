@@ -1,1 +1,0 @@
- /Users/lang/Documents/Project/Telegram-cup/frontend/build/web/manifest.json:  /Users/lang/Documents/Project/Telegram-cup/frontend/web/index.html /Users/lang/Documents/Project/Telegram-cup/frontend/web/manifest.json
