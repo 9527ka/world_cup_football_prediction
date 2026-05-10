@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
+import '../services/telegram.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
@@ -37,15 +38,32 @@ Widget _sectionLabel(String text) => Padding(
 // 1. ShareEarnPage — 分享赚钱 / 邀请返佣
 // ═════════════════════════════════════════════════════════════════════════════
 
-class ShareEarnPage extends StatelessWidget {
-  const ShareEarnPage({super.key});
+class ShareEarnPage extends StatefulWidget {
+  const ShareEarnPage({super.key, required this.state});
+  final AppState state;
 
-  static const _code = 'BDCQ2026';
-  static const _link = 'https://t.me/this_hai_wang_bot?start=BDCQ2026';
+  @override
+  State<ShareEarnPage> createState() => _ShareEarnPageState();
+}
 
-  void _copy(BuildContext ctx, String text) {
+class _ShareEarnPageState extends State<ShareEarnPage> {
+  static const _botUsername = 'this_hai_wang_bot';
+  Future<({String inviteCode, int invitedCount, double totalCommission})>?
+      _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.state.api.getReferrals();
+  }
+
+  String _link(String code) =>
+      code.isEmpty ? '' : 'https://t.me/$_botUsername?start=$code';
+
+  void _copy(String text) {
+    if (text.isEmpty) return;
     Clipboard.setData(ClipboardData(text: text));
-    Toast.show(ctx, tr('common.copied'));
+    Toast.show(context, tr('common.copied'));
   }
 
   @override
@@ -55,155 +73,92 @@ class ShareEarnPage extends StatelessWidget {
       body: DecoratedBox(
         decoration: _pageBg,
         child: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            children: [
-              // ── invite code card ──
-              LightCard(
-                gradient: T.brandGradient,
-                child: Column(
-                  children: [
-                    Text(tr('feat.share.invite_code'),
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white70)),
-                    const SizedBox(height: 6),
-                    const Text(_code,
-                        style: TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 4,
-                            color: Colors.white)),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _ActionBtn(
-                            label: tr('feat.share.copy_code'),
-                            icon: Icons.copy_rounded,
-                            onTap: () => _copy(context, _code),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _ActionBtn(
-                            label: tr('feat.share.copy_link'),
-                            icon: Icons.link_rounded,
-                            onTap: () => _copy(context, _link),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── reward tiers ──
-              _sectionLabel(tr('feat.share.rules')),
-              LightCard(
-                child: Column(
-                  children: [
-                    _TierRow(
-                      level: tr('feat.share.tier1'),
-                      rate: '20%',
-                      desc: tr('feat.share.tier1_desc'),
-                      color: T.brand,
-                    ),
-                    const Divider(height: 24),
-                    _TierRow(
-                      level: tr('feat.share.tier2'),
-                      rate: '10%',
-                      desc: tr('feat.share.tier2_desc'),
-                      color: T.gold,
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── referral tree illustration ──
-              _sectionLabel(tr('feat.share.network')),
-              LightCard(
-                child: SizedBox(
-                  height: 140,
-                  child: Center(
+          child: FutureBuilder<({String inviteCode, int invitedCount, double totalCommission})>(
+            future: _future,
+            builder: (ctx, snap) {
+              final code = snap.data?.inviteCode ?? '';
+              final invited = snap.data?.invitedCount ?? 0;
+              final earned = snap.data?.totalCommission ?? 0.0;
+              return ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                children: [
+                  // ── invite code card ──
+                  LightCard(
+                    gradient: T.brandGradient,
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        _TreeNode(label: tr('feat.share.me'), color: T.brandDeep),
+                        Text(tr('feat.share.invite_code'),
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white70)),
+                        const SizedBox(height: 6),
+                        Text(code.isEmpty ? '——' : code,
+                            style: const TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 4,
+                                color: Colors.white)),
+                        const SizedBox(height: 14),
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Container(
-                                width: 1,
-                                height: 18,
-                                color: T.inkSubtle),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                                width: 60,
-                                height: 1,
-                                color: T.inkSubtle),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _TreeNode(label: tr('feat.share.t1'), color: T.brand),
-                            const SizedBox(width: 24),
-                            _TreeNode(label: tr('feat.share.t1'), color: T.brand),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                                width: 1,
-                                height: 12,
-                                color: T.inkSubtle),
-                            const SizedBox(width: 68),
-                            Container(
-                                width: 1,
-                                height: 12,
-                                color: T.inkSubtle),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _TreeNode(label: tr('feat.share.t2'), color: T.gold),
-                            const SizedBox(width: 24),
-                            _TreeNode(label: tr('feat.share.t2'), color: T.gold),
+                            Expanded(
+                              child: _ActionBtn(
+                                label: tr('feat.share.copy_code'),
+                                icon: Icons.copy_rounded,
+                                onTap: () => _copy(code),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _ActionBtn(
+                                label: tr('feat.share.copy_link'),
+                                icon: Icons.link_rounded,
+                                onTap: () => _copy(_link(code)),
+                              ),
+                            ),
                           ],
                         ),
                       ],
                     ),
                   ),
-                ),
-              ),
 
-              const SizedBox(height: 16),
+                  const SizedBox(height: 16),
 
-              // ── stats ──
-              _sectionLabel(tr('feat.share.stats')),
-              LightCard(
-                child: Row(
-                  children: [
-                    Expanded(child: _StatItem(value: '0', label: tr('feat.share.stat_invited'))),
-                    Expanded(child: _StatItem(value: '0.00', label: tr('feat.share.stat_earnings'))),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
+                  // ── rules: rate follows MY VIP tier (0.3% – 1.0%) ──
+                  _sectionLabel(tr('feat.share.rules')),
+                  LightCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(tr('feat.share.rule_rate'),
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: T.ink)),
+                        const SizedBox(height: 4),
+                        Text(tr('feat.share.rule_desc'),
+                            style: const TextStyle(fontSize: 12, color: T.inkMd)),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // ── stats ──
+                  _sectionLabel(tr('feat.share.stats')),
+                  LightCard(
+                    child: Row(
+                      children: [
+                        Expanded(child: _StatItem(value: '$invited', label: tr('feat.share.stat_invited'))),
+                        Expanded(child: _StatItem(value: earned.toStringAsFixed(2), label: tr('feat.share.stat_earnings'))),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -241,73 +196,6 @@ class _ActionBtn extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _TierRow extends StatelessWidget {
-  const _TierRow(
-      {required this.level,
-      required this.rate,
-      required this.desc,
-      required this.color});
-  final String level;
-  final String rate;
-  final String desc;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(T.rSm),
-          ),
-          alignment: Alignment.center,
-          child: Text(rate,
-              style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w800, color: color)),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(level,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w700, color: T.ink)),
-              const SizedBox(height: 2),
-              Text(desc, style: const TextStyle(fontSize: 12, color: T.inkMd)),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _TreeNode extends StatelessWidget {
-  const _TreeNode({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(T.rXs),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(label,
-          style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w700, color: color)),
     );
   }
 }
@@ -897,6 +785,11 @@ class _BenefitItem extends StatelessWidget {
 // 4. CustomerServicePage — 在线客服
 // ═════════════════════════════════════════════════════════════════════════════
 
+void _openTelegramChat(BuildContext ctx, String username) {
+  Telegram.openTelegramLink('https://t.me/$username');
+  Toast.show(ctx, tr('feat.cs.opening'));
+}
+
 class CustomerServicePage extends StatelessWidget {
   const CustomerServicePage({super.key});
 
@@ -949,7 +842,7 @@ class CustomerServicePage extends StatelessWidget {
                         children: const [
                           Icon(Icons.telegram, size: 20, color: Colors.white),
                           SizedBox(width: 6),
-                          Text('@this_hai_wang_bot',
+                          Text('@go_home_007',
                               style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w700,
@@ -1035,9 +928,7 @@ class CustomerServicePage extends StatelessWidget {
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
-                      onTap: () {
-                        Toast.show(context, tr('feat.cs.opening'));
-                      },
+                      onTap: () => _openTelegramChat(context, 'go_home_007'),
                       borderRadius: BorderRadius.circular(T.rSm),
                       child: Center(
                         child: Row(

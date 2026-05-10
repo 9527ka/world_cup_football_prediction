@@ -58,8 +58,8 @@
     styleEl.textContent = `
       #live-overlay {
         position: fixed;
-        right: 12px;
-        bottom: 76px;
+        right: calc(12px + env(safe-area-inset-right));
+        bottom: calc(76px + env(safe-area-inset-bottom));
         z-index: 2147483646;
         background: #111;
         border-radius: 10px;
@@ -71,6 +71,8 @@
         -webkit-user-select: none;
         touch-action: none;
         display: none;
+        max-width: calc(100vw - 24px);
+        max-height: calc(100vh - 96px);
       }
       #live-overlay.size-small  { width: 240px; height: 158px; }
       #live-overlay.size-medium { width: 320px; height: 200px; }
@@ -146,7 +148,12 @@
         background: linear-gradient(45deg, transparent 0%, transparent 45%, rgba(255,255,255,.4) 45%, rgba(255,255,255,.4) 55%, transparent 55%);
       }
       @media (max-width: 480px) {
-        #live-overlay.size-large { width: calc(100vw - 24px); height: 220px; }
+        /* On narrow screens any preset would overflow; constrain all of them
+           to the viewport and keep a 16:10-ish aspect so the player isn't
+           letterboxed too aggressively. */
+        #live-overlay.size-small  { width: calc(60vw); height: calc(60vw * 0.62); }
+        #live-overlay.size-medium { width: calc(80vw); height: calc(80vw * 0.62); }
+        #live-overlay.size-large  { width: calc(100vw - 24px); height: calc((100vw - 24px) * 0.62); }
       }
     `;
     document.head.appendChild(styleEl);

@@ -100,14 +100,58 @@ class _DepositPageState extends State<DepositPage> {
       if (mounted) {
         setState(() {
           _proofUrl = '';
-          _ok = '${tr('dep.submitted')} (#${d.id})';
+          _ok = null;
         });
+        await _showDepositSuccessDialog(d.id, amt);
       }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
+  }
+
+  /// Success popup — shown after a deposit POST returns 200. We deliberately
+  /// don't auto-dismiss: the user should consciously close it so they remember
+  /// the deposit is "submitted, awaiting admin review" (not "已到账").
+  Future<void> _showDepositSuccessDialog(int id, double amount) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: T.upDark, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(tr('dep.submitted'),
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${amount.toStringAsFixed(2)} USDT',
+                style: const TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.w800, color: T.brandDeep)),
+            const SizedBox(height: 6),
+            Text('#$id',
+                style: const TextStyle(
+                    fontSize: 12, color: T.inkLo, fontFamily: T.fontMono)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(tr('common.confirm')),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

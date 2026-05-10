@@ -232,19 +232,23 @@ class TeamCrest extends StatelessWidget {
     super.key,
     required this.name,
     required this.leagueSlug,
+    this.id,
     this.size = 36,
     this.borderRadius = 8,
   });
 
   final String name;
   final String leagueSlug;
+  /// Upstream team ID (apifootball / api-sports). When provided, used to
+  /// build the CDN logo URL directly — no NAME→ID lookup needed.
+  final int? id;
   final double size;
   final double borderRadius;
 
   @override
   Widget build(BuildContext context) {
     final fallback = _flagFallback();
-    // Admin-uploaded override takes top priority.
+    // Priority: admin override > upstream id (CDN) > legacy NAME-map > flag.
     final override = TeamOverrides.instance.logoUrl(name);
     if (override != null) {
       return SizedBox(
@@ -265,8 +269,11 @@ class TeamCrest extends StatelessWidget {
         ),
       );
     }
-    final id = _apiSportsTeamID[name];
-    if (id == null) return fallback;
+    // Resolve effective id: caller-provided wins; fall back to legacy map
+    // for matches whose upstream payload pre-dates the homeId/awayId field.
+    final effectiveId =
+        (id != null && id! > 0) ? id : _apiSportsTeamID[name];
+    if (effectiveId == null) return fallback;
     return SizedBox(
       width: size,
       height: size,
@@ -275,13 +282,13 @@ class TeamCrest extends StatelessWidget {
         child: Container(
           color: Colors.white,
           padding: EdgeInsets.all(size * 0.08),
-          child: _localLogoIDs.contains(id)
+          child: _localLogoIDs.contains(effectiveId)
               ? Image.asset(
-                  'assets/team_logos/$id.png',
+                  'assets/team_logos/$effectiveId.png',
                   fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => _cdnImage(id, fallback),
+                  errorBuilder: (_, __, ___) => _cdnImage(effectiveId, fallback),
                 )
-              : _cdnImage(id, fallback),
+              : _cdnImage(effectiveId, fallback),
         ),
       ),
     );

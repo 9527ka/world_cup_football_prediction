@@ -14,6 +14,8 @@ import '../theme/tokens.dart';
 import '../utils/league_flags.dart';
 import '../utils/team_crests.dart';
 import '../utils/team_names.dart';
+import '../widgets/chain_icon.dart';
+import '../widgets/language_picker.dart';
 import '../widgets/light_card.dart';
 import 'feature_pages.dart';
 import 'match_detail_page.dart';
@@ -480,12 +482,14 @@ class _HomePageState extends State<HomePage> {
 
   // ── round entries ─────────────────────────────────────────────────
   Widget _roundEntries() {
+    // 入口图标改用 ./icon 目录提供的真实位图(转成 PNG 后入库)。
+    // 替换最后一个"规则"为"语言",直接弹底部语言选择器,不进新页。
     final items = const [
-      _RoundSpec('home.share_earn', Icons.share_outlined, badge: 'HOT'),
-      _RoundSpec('home.rebate', Icons.percent_outlined),
-      _RoundSpec('home.vip', Icons.workspace_premium_outlined),
-      _RoundSpec('home.service', Icons.support_agent_outlined),
-      _RoundSpec('home.rules', Icons.help_outline),
+      _RoundSpec('home.share_earn', 'assets/icons/share.png', badge: 'HOT'),
+      _RoundSpec('home.rebate', 'assets/icons/rebate.png'),
+      _RoundSpec('home.vip', 'assets/icons/vip.png'),
+      _RoundSpec('home.service', 'assets/icons/service.png'),
+      _RoundSpec('home.language', 'assets/icons/language.png'),
     ];
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -496,10 +500,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openFeature(String key) {
+    if (key == 'home.language') {
+      showLanguagePicker(context);
+      return;
+    }
     Widget? page;
     switch (key) {
       case 'home.share_earn':
-        page = const ShareEarnPage();
+        page = ShareEarnPage(state: widget.state);
         break;
       case 'home.rebate':
         page = const RebatePage();
@@ -509,9 +517,6 @@ class _HomePageState extends State<HomePage> {
         break;
       case 'home.service':
         page = const CustomerServicePage();
-        break;
-      case 'home.rules':
-        page = const RulesPage();
         break;
     }
     if (page != null) {
@@ -529,24 +534,18 @@ class _HomePageState extends State<HomePage> {
             Stack(
               clipBehavior: Clip.none,
               children: [
-                Container(
+                SizedBox(
                   width: 52, height: 52,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft, end: Alignment.bottomRight,
-                      colors: [Color(0xFF5FE5FE), Color(0xFF2CD7FD)],
+                  child: Center(
+                    child: Image.asset(
+                      s.asset,
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) =>
+                          const Icon(Icons.help_outline, color: T.brandDeep, size: 24),
                     ),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x662CD7FD),
-                        blurRadius: 12,
-                        offset: Offset(0, 6),
-                      ),
-                    ],
                   ),
-                  alignment: Alignment.center,
-                  child: Icon(s.icon, color: Colors.white, size: 24),
                 ),
                 if (s.badge != null)
                   Positioned(
@@ -841,7 +840,7 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 10),
             Row(
               children: [
-                TeamCrest(name: m.home, leagueSlug: m.leagueSlug, size: 28),
+                TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 28),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(localizedTeam(m.home),
@@ -874,7 +873,7 @@ class _HomePageState extends State<HomePage> {
                           color: T.ink)),
                 ),
                 const SizedBox(width: 8),
-                TeamCrest(name: m.away, leagueSlug: m.leagueSlug, size: 28),
+                TeamCrest(name: m.away, id: m.awayId, leagueSlug: m.leagueSlug, size: 28),
               ],
             ),
             const SizedBox(height: 10),
@@ -1012,41 +1011,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ── coins / footer ────────────────────────────────────────────────
+  // 与充值页支持的三条链对齐:USDT-TRC20 / ETH / BTC,直接复用同一套 SVG。
   Widget _coins() {
-    final coins = const [
-      ['₮', 'USDT', 0xFF1A9D5C],
-      ['₿', 'BTC', 0xFFF7931A],
-      ['Ξ', 'ETH', 0xFF627EEA],
-      ['T', 'TRX', 0xFFE03E2D],
-      ['\$', 'USDC', 0xFF2775CA],
-      ['B', 'BNB', 0xFFF0B90B],
-    ];
+    const chains = ['trc20', 'eth', 'btc'];
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 18),
       child: Wrap(
-        spacing: 12,
+        spacing: 14,
         runSpacing: 8,
         alignment: WrapAlignment.center,
-        children: coins.map((c) {
-          return Container(
-            width: 30, height: 30,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Color(c[2] as int),
-              boxShadow: const [
-                BoxShadow(
-                    color: Color(0x1F000000), blurRadius: 6, offset: Offset(0, 2))
-              ],
-            ),
-            alignment: Alignment.center,
-            child: Text(c[0] as String,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                    fontFamily: T.fontMono)),
-          );
-        }).toList(),
+        children: chains
+            .map((c) => ChainIcon(chain: c, size: 32))
+            .toList(),
       ),
     );
   }
@@ -1102,9 +1078,9 @@ class _HomePageState extends State<HomePage> {
 
 class _RoundSpec {
   final String label;
-  final IconData icon;
+  final String asset;
   final String? badge;
-  const _RoundSpec(this.label, this.icon, {this.badge});
+  const _RoundSpec(this.label, this.asset, {this.badge});
 }
 
 class _LiveBadge extends StatelessWidget {

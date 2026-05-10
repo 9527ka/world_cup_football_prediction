@@ -9,6 +9,7 @@ import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/bet_slip.dart';
 import '../services/i18n.dart';
+import '../services/player_names.dart';
 import '../services/stream_feed.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
@@ -53,6 +54,12 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   OddsSnapshot? _odds;
   _BetSelection? _selected;
   StreamSubscription<OddsSnapshot>? _sub;
+  StreamSubscription<List<MatchInfo>>? _matchesSub;
+  /// Live snapshot of the match — starts as the row from the list page,
+  /// then gets refreshed by every PublishMatches push so the score, status,
+  /// corners/cards, and "已超过 2.5 球 → 大小球禁用" all stay accurate.
+  /// Must NOT use widget.match for anything time-sensitive in build().
+  late MatchInfo _match = widget.match;
   bool _placing = false;
   String? _placeError;
   String? _placeOK;
@@ -89,8 +96,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   double _drawerHeight = 230; // 初始合理猜测,首帧后被实际值覆盖
 
   // 只有 settled(已结束)的比赛完全锁住下注。pending 和 live 都允许投注。
-  bool get _locked => widget.match.isSettled;
-  bool get _isLive => widget.match.isLive;
+  bool get _locked => _match.isSettled;
+  bool get _isLive => _match.isLive;
   // 滚球进球封盘期 — 拒绝下注但可继续选择/查看
   bool get _liveLocked {
     final lu = _odds?.lockUntil;
@@ -109,7 +116,43 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     _sub = widget.state.stream.odds.listen((s) {
       if (s.matchId == widget.match.id && mounted) {
         _diffAndFlash(_odds, s);
-        setState(() => _odds = s);
+        setState(() {
+          _odds = s;
+          if (_selected != null) {
+            final live = _priceForSelection(_selected!, s);
+            if (live <= 0) {
+              // Market closed (e.g. both teams scored → BTTS settled,
+              // total goals exceeded OU line, current score advanced past
+              // the picked correct_score). Auto-clear so the bet button
+              // can't fire at a price the backend has already rejected.
+              _selected = null;
+            } else if ((live - _selected!.price).abs() > 0.005) {
+              // Price drifted but selection still valid — replace the
+              // tile so the bet button label and the eventual POST body
+              // both reflect the LATEST live price, not the one the user
+              // tapped 10 s ago.
+              _selected = _BetSelection(
+                marketType: _selected!.marketType,
+                score: _selected!.score,
+                price: live,
+                label: _selected!.label,
+              );
+            }
+          }
+        });
+      }
+    });
+    // Live match push: keep _match in sync with the latest score/status so
+    // the hero "X:Y" header and any per-market resolved-state checks stay
+    // current. Without this, a goal scored elsewhere wouldn't reflect on
+    // the detail page until the user pops + re-enters.
+    _matchesSub = widget.state.stream.matches.listen((list) {
+      if (!mounted) return;
+      for (final m in list) {
+        if (m.id == widget.match.id) {
+          if (mounted) setState(() => _match = m);
+          break;
+        }
       }
     });
     try {
@@ -146,6 +189,49 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         _refreshStatsAndEvents();
       });
     }
+  }
+
+  /// Look up the live price for a selection in a snapshot. Returns 0 when
+  /// the option no longer exists or the market has resolved (e.g. BTTS
+  /// after both teams scored, OU 2.5 after the third goal). Used to
+  /// auto-clear stale selections so the bet button can't fire at a price
+  /// the backend has already invalidated.
+  double _priceForSelection(_BetSelection sel, OddsSnapshot s) {
+    switch (sel.marketType) {
+      case MarketType.correctScore:
+        for (final o in s.correctScore) {
+          if (o.score == sel.score) return o.price;
+        }
+        return 0;
+      case MarketType.overUnder25:
+        final ou = s.overUnder;
+        if (ou == null) return 0;
+        if (sel.score == 'over') return ou.over;
+        if (sel.score == 'under') return ou.under;
+        return 0;
+      case MarketType.btts:
+        final b = s.btts;
+        if (b == null) return 0;
+        if (sel.score == 'yes') return b.yes;
+        if (sel.score == 'no') return b.no;
+        return 0;
+      case MarketType.matchWinner:
+        final ml = s.moneyLine;
+        if (ml == null) return 0;
+        switch (sel.score) {
+          case 'home': return ml.home;
+          case 'draw': return ml.draw;
+          case 'away': return ml.away;
+        }
+        return 0;
+      case MarketType.asianHandicap:
+        final h = s.handicap;
+        if (h == null) return 0;
+        if (sel.score == 'home') return h.home;
+        if (sel.score == 'away') return h.away;
+        return 0;
+    }
+    return 0;
   }
 
   /// Resolve a playable m3u8 stream for this match. 7t666 feed (joined by
@@ -204,7 +290,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   Future<void> _refreshStatsAndEvents() async {
     // 仅有 live / settled 才有意义;pending 比赛上游会返回空
-    if (!_isLive && !widget.match.isSettled) return;
+    if (!_isLive && !_match.isSettled) return;
     try {
       final r = await widget.state.api.getMatchStats(widget.match.id);
       if (!mounted) return;
@@ -217,6 +303,24 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       final ev = await widget.state.api.getMatchEvents(widget.match.id);
       if (!mounted) return;
       setState(() => _events = ev);
+      // When the user is reading in Chinese, fire a backend lookup for the
+      // player names attached to the events so the next paint can show the
+      // dongqiudi-translated form instead of "M. Salah". Fire-and-forget;
+      // a setState after success swaps the labels in place.
+      if (I18n.instance.locale == 'zh') {
+        final names = <String>{};
+        for (final e in ev) {
+          if (e.player.isNotEmpty) names.add(e.player);
+        }
+        if (names.isNotEmpty) {
+          PlayerNames.instance
+              .ensureLoaded(widget.state.api.baseUrl, names,
+                  authToken: widget.state.api.token)
+              .then((_) {
+            if (mounted) setState(() {});
+          });
+        }
+      }
     } catch (_) {}
   }
 
@@ -270,6 +374,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   void dispose() {
     widget.state.stream.unsubscribe(widget.match.id);
     _sub?.cancel();
+    _matchesSub?.cancel();
     _historyTimer?.cancel();
     _lockTickTimer?.cancel();
     _statsTimer?.cancel();
@@ -435,7 +540,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Widget _hero() {
-    final m = widget.match;
+    final m = _match;
     final fmt = DateFormat('MM-dd · HH:mm');
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
@@ -487,7 +592,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 Expanded(
                   child: Column(
                     children: [
-                      TeamCrest(name: m.home, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
+                      TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
                       const SizedBox(height: 8),
                       Text(localizedTeam(m.home),
                           style: const TextStyle(
@@ -534,7 +639,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 Expanded(
                   child: Column(
                     children: [
-                      TeamCrest(name: m.away, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
+                      TeamCrest(name: m.away, id: m.awayId, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
                       const SizedBox(height: 8),
                       Text(localizedTeam(m.away),
                           style: const TextStyle(
@@ -897,7 +1002,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                             color: accent)),
                     if (e.player.isNotEmpty) ...[
                       const SizedBox(width: 5),
-                      Text(e.player,
+                      Text(
+                          I18n.instance.locale == 'zh'
+                              ? PlayerNames.instance.localize(e.player)
+                              : e.player,
                           style: const TextStyle(
                               fontSize: 11, color: T.inkMd)),
                     ],
@@ -1470,7 +1578,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   void _addToSlip() {
     final sel = _selected;
     if (sel == null) return;
-    final m = widget.match;
+    final m = _match;
     widget.state.betSlip.add(BetSelection(
       matchId: m.id,
       home: m.home,

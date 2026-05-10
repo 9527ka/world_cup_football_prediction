@@ -774,11 +774,11 @@ const Map<String, String> _zh = {
   'Pescara': '佩斯卡拉',
   'Reggiana': '雷吉亚纳',
   'Catanzaro': '卡坦扎罗',
-  'Avellino': '阿维利诺',
+  'Avellino': '阿韦利诺',
   'Padova': '帕多瓦',
   'Mantova': '曼托瓦',
   'Sudtirol': '南蒂罗尔',
-  'Carrarese': '卡拉雷斯',
+  'Carrarese': '卡拉雷塞',
   // Germany
   'Bayern München': '拜仁慕尼黑',
   'Borussia Mönchengladbach': '门兴格拉德巴赫',
@@ -801,37 +801,37 @@ const Map<String, String> _zh = {
   'Kilmarnock': '基尔马诺克',
   'Dundee': '邓迪',
   'Dundee Utd': '邓迪联',
-  'Dunfermline': '邓弗姆林',
+  'Dunfermline': '邓弗姆林竞技',
   'Falkirk': '福尔柯克',
   'Livingston': '利文斯顿',
   'ST Mirren': '圣米伦',
   'Arbroath': '阿布罗斯',
   // Belgium
-  'OH Leuven': '鲁汶',
+  'OH Leuven': '奥哈瓦里',
   'Beerschot VA': '比尔肖特',
   'Lommel United': '洛梅尔',
   'RAAL La Louvière': '拉鲁维埃',
   'Dender': '丹德',
   'Zulte Waregem': '祖尔特瓦雷格姆',
   // Switzerland
-  'Lausanne': '洛桑',
+  'Lausanne': '洛桑体育',
   'Grasshoppers': '草蜢',
   // Austria
   'Ried': '里德',
-  'Grazer AK': '格拉茨竞技',
-  'WSG Wattens': 'WSG 瓦滕斯',
+  'Grazer AK': '格拉茨AK',
+  'WSG Wattens': '瓦滕斯',
   'FC BW Linz': '蓝白林茨',
   // Denmark
   'Sonderjyske': '南日德兰',
   'Viborg': '维堡',
   // Poland — note: Polish clubs are often named after the club word (Jagiellonia,
   // Raków, Widzew, Arka) NOT the city. Earlier I conflated club ↔ city; fixed.
-  'Lech Poznan': '波兹南列赫',
-  'Lechia Gdansk': '格但斯克',
-  'Jagiellonia': '亚捷隆尼亚',
+  'Lech Poznan': '波兹南莱赫',
+  'Lechia Gdansk': '格但斯克莱希亚',
+  'Jagiellonia': '雅盖隆',
   'Raków Częstochowa': '拉科夫',
-  'Widzew Łódź': '维兹纽',
-  'Arka Gdynia': '阿尔卡',
+  'Widzew Łódź': '罗兹维泽夫',
+  'Arka Gdynia': '阿尔卡格丁尼亚',
   // Greece
   'Atromitos': '阿特罗米托斯',
   'Larisa': '拉里萨',
@@ -844,10 +844,10 @@ const Map<String, String> _zh = {
   'Shakhtar Donetsk': '顿涅茨克矿工',
   'Zorya Luhansk': '卢甘斯克黎明',
   'Karpaty': '喀尔巴阡',
-  'Kryvbas KR': '克里夫巴斯',
-  'Polessya': '波利西亚',
+  'Kryvbas KR': '克里沃罗格克里夫巴斯',
+  'Polessya': '日托米尔波利西亚',
   'Oleksandria': '亚历山德里亚',
-  'Metalist 1925 Kharkiv': '金属 1925',
+  'Metalist 1925 Kharkiv': '哈尔科夫梅塔利斯特1925',
   'Ruh Lviv': '鲁赫',
   'Kudrivka': '库德里夫卡',
   'Epitsentr Dunayivtsi': '埃皮森特',
@@ -861,13 +861,13 @@ const Map<String, String> _zh = {
   // so we don't map it here — let the original token through and rely on
   // upstream returning the disambiguated full name (e.g. "Cerezo Osaka").
   'Urawa': '浦和红钻',
-  'Consadole Sapporo': '札幌冈萨多',
+  'Consadole Sapporo': '北海道札幌冈萨多',
   'Omiya Ardija': '大宫松鼠',
-  'Thespakusatsu Gunma': '群马草津',
+  'Thespakusatsu Gunma': '群马草津温泉',
   'Iwaki': '磐城',
   'V-varen Nagasaki': '长崎成功丸',
-  'Imabari': '今治',
-  'Tochigi City': '栃木市',
+  'Imabari': 'FC今治',
+  'Tochigi City': '枥木市',
   'Parceiro Nagano': '长野帕塞罗',
   // Korea
   'Pohang Steelers': '浦项制铁',
@@ -876,7 +876,7 @@ const Map<String, String> _zh = {
   'Incheon United': '仁川联',
   'Gimpo Citizen': '金浦市民',
   'Hwaseong': '华城',
-  'Cheongju': '清州',
+  'Cheongju': '忠北清州',
   'Asan Mugunghwa': '牙山木槿花',
   'Suwon City FC': '水原市民',
   // China
@@ -884,8 +884,63 @@ const Map<String, String> _zh = {
   'Henan Jianye': '河南建业',
   'Chengdu Better City': '成都蓉城',
   'Chongqing Tongliang Long': '重庆铜梁龙',
-  'Heilongjiang Lava Spring': '黑龙江冰熔岩',
+  'Heilongjiang Lava Spring': '黑龙江冰城',
   'Meizhou Kejia': '梅州客家',
+
+  // ────────────────────────────────────────────────────────────────────
+  // apifootball 短名别名(2026-05 起 fetcher 切到 apifootball,team 名
+  // 变成短形式如 "Arsenal" 而不是 "Arsenal FC")。下面只列出**老 _zh 映射
+  // 里没有**的短名 — 已重复的(如 'Liverpool''Chelsea''Sevilla''Inter'
+  // 'Lazio''Bayern München''SC Freiburg''Lens''Strasbourg' 等)在前面 EPL/
+  // LaLiga/Serie A/Bundesliga/Ligue1 段已经存在,此处不再重复。
+  // ────────────────────────────────────────────────────────────────────
+  // EPL 短名(尚未在前面段出现的)
+  'Arsenal': '阿森纳',
+  'Burnley': '伯恩利',
+  'Everton': '埃弗顿',
+  'Leeds': '利兹联',
+  'Newcastle': '纽卡斯尔联',
+  'Tottenham': '热刺',
+  'West Ham': '西汉姆联',
+  // LaLiga 短名
+  'Athletic Club': '毕尔巴鄂竞技',
+  'Barcelona': '巴塞罗那',
+  'Getafe': '赫塔费',
+  'Girona': '赫罗纳',
+  'Mallorca': '马略卡',
+  'Real Betis': '皇家贝蒂斯',
+  'Oviedo': '皇家奥维耶多',
+  'Real Sociedad': '皇家社会',
+  'Valencia': '瓦伦西亚',
+  'Villarreal': '比利亚雷亚尔',
+  // Serie A 短名
+  'Fiorentina': '佛罗伦萨',
+  'Atalanta': '亚特兰大',
+  'Bologna': '博洛尼亚',
+  'Como': '科莫',
+  'Genoa': '热那亚',
+  'Juventus': '尤文图斯',
+  'Parma': '帕尔马',
+  'Pisa': '比萨',
+  'Napoli': '那不勒斯',
+  'Cremonese': '克雷莫内塞',
+  'Lecce': '莱切',
+  // Bundesliga(apifootball 短名/变音符)
+  '1. FC Köln': '科隆',
+  'FSV Mainz 05': '美因茨',
+  // Ligue 1(老 _zh 没有/或者用了不同名)
+  'Angers': '昂热',
+  'Auxerre': '欧塞尔',
+  'Le Havre': '勒阿弗尔',
+  'Lorient': '洛里昂',
+  'Lyon': '里昂',
+  'Marseille': '马赛',
+  'Metz': '梅斯',
+  'Monaco': '摩纳哥',
+  'Nice': '尼斯',
+  'Rennes': '雷恩',
+  'Stade Brestois 29': '布雷斯特',
+  'Toulouse': '图卢兹',
 };
 
 /// 联赛名翻译(zh)。原数据格式: "England - Premier League"。
@@ -937,6 +992,20 @@ const Map<String, String> _zhLeague = {
   'International Clubs Uefa Champions League': '欧冠',
   'International Clubs Uefa Europa League': '欧联',
   'International Clubs Uefa Conference League': '欧协联',
+  // ─── apifootball 真实上游显示名(部分带重音/与老 odds-api 标点不同) ───
+  'Türkiye - Süper Lig': '土超',
+  'Brazil - Brasileiro Série A': '巴甲',
+  'Mexico - Liga MX Clausura': '墨西哥甲',
+  'Japan - J League': '日职联',
+  'Japan - J League 2': '日乙',
+  'Republic of Korea - K League 1': '韩K1',
+  'Republic of Korea - K League 2': '韩K2',
+  // ─── 兜底:prettifySlug 输出(每个单词首字母大写,无连字符) ───
+  // 当 ODDS_LEAGUES 配置了 slug 但上游还没返回任何 match,
+  // 后端 fallback 走 prettifySlug 生成 chip 名,要保证仍能翻译。
+  'Uefa Champions League': '欧冠',
+  'Uefa Europa League': '欧联',
+  'Uefa Conference League': '欧协联',
   'England Premier League': '英超',
   'England Championship': '英冠',
   'Spain Laliga': '西甲',
@@ -986,6 +1055,27 @@ String localizedTeam(String original) {
         original;
   }
   return TeamOverrides.instance.nameEn(original) ?? original;
+}
+
+/// 反向查找:把中文球队名翻成英文,用于把搜索框输入的中文映射回上游英文,
+/// 后端匹配时仍然走 substring contains(home/away)。无映射 → 返回原 input。
+///
+/// 命中规则(从严到松):
+///   1. 全等:"利物浦" → "Liverpool FC"
+///   2. zh 名包含输入:"曼" → "曼联" → "Manchester United"
+/// 如果输入没含中文字符,直接原样返回(显然是英文搜索)。
+String resolveTeamSearchQuery(String input) {
+  final trimmed = input.trim();
+  if (trimmed.isEmpty) return trimmed;
+  final hasChinese = RegExp(r'[一-鿿]').hasMatch(trimmed);
+  if (!hasChinese) return trimmed;
+  for (final e in _zh.entries) {
+    if (e.value == trimmed) return e.key;
+  }
+  for (final e in _zh.entries) {
+    if (e.value.contains(trimmed)) return e.key;
+  }
+  return trimmed;
 }
 
 /// Localize a league name. Same fallback behavior as [localizedTeam].

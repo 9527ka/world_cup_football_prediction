@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Splash Preview</title>
+<style>
+  html, body { background:#0a1929; margin:0; height:100%; }
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(180deg, #0a1929 0%, #0d2540 100%);
+    color: #cfe6ff;
+    font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
+  }
+  .ball-stage {
+    position: relative;
+    width: 80px;
+    height: 110px;
+  }
+  .ball {
+    /* 外层:translateY + 着地挤压。transform-origin 设在底部,球被
+       压扁时贴着"地面"变形(而不是中心收缩)。 */
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    width: 56px;
+    height: 56px;
+    margin-left: -28px;
+    transform-origin: 50% 100%;
+    animation: ballBounce 1.8s linear infinite;
+  }
+  .ball-spin {
+    /* 内层:旋转。transform-origin 默认中心,球绕自己的轴转。 */
+    width: 100%;
+    height: 100%;
+    animation: ballSpin 1.8s linear infinite;
+  }
+  .ball-spin img { width: 100%; height: 100%; display: block; }
+  .shadow {
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    width: 56px;
+    height: 8px;
+    margin-left: -28px;
+    background: radial-gradient(50% 50%, rgba(0,0,0,.45), rgba(0,0,0,0));
+    border-radius: 50%;
+    animation: shadowPulse 1.8s linear infinite;
+  }
+  /* Bounce(translate + 挤压拉伸)
+     物理细节:
+     - 0%/100% 都是 rest scale(1,1) → 循环无缝
+     - 1-2% anticipation:轻蹲蓄力
+     - 上升 ease-out(减速到顶),下落 ease-in(加速到地)
+     - 峰值是圆的(scale 1,1),不再人为加 stretch
+     - 落地前 25-30% 范围内逐渐拉长(空气阻力/重力错觉)
+     - 着地瞬间宽扁(scale 1.28, 0.72),弹离时立刻恢复
+     - 5 次衰减弹跳,峰值 -68 → -41 → -24 → -12 → -4 px */
+  @keyframes ballBounce {
+    /* === 起步 === */
+    0%   { transform: translateY(0)     scale(1, 1);          animation-timing-function: ease-in; }
+    2%   { transform: translateY(0)     scale(1.18, 0.82);    animation-timing-function: ease-out; }
+    /* === 跳 1:满能量,峰 -68 === */
+    4%   { transform: translateY(-10px) scale(1, 1);          animation-timing-function: ease-out; }
+    18%  { transform: translateY(-68px) scale(1, 1);          animation-timing-function: ease-in; }
+    27%  { transform: translateY(-30px) scale(0.97, 1.03);    animation-timing-function: ease-in; }
+    30%  { transform: translateY(-3px)  scale(0.92, 1.08);    animation-timing-function: ease-in; }
+    31%  { transform: translateY(0)     scale(1.28, 0.72);    animation-timing-function: ease-out; }
+    /* === 跳 2:60%,峰 -41 === */
+    35%  { transform: translateY(-7px)  scale(1, 1);          animation-timing-function: ease-out; }
+    45%  { transform: translateY(-41px) scale(1, 1);          animation-timing-function: ease-in; }
+    53%  { transform: translateY(-7px)  scale(0.95, 1.05);    animation-timing-function: ease-in; }
+    56%  { transform: translateY(0)     scale(1.22, 0.78);    animation-timing-function: ease-out; }
+    /* === 跳 3:35%,峰 -24 === */
+    59%  { transform: translateY(-4px)  scale(1, 1);          animation-timing-function: ease-out; }
+    65%  { transform: translateY(-24px) scale(1, 1);          animation-timing-function: ease-in; }
+    71%  { transform: translateY(-4px)  scale(0.97, 1.03);    animation-timing-function: ease-in; }
+    73%  { transform: translateY(0)     scale(1.15, 0.85);    animation-timing-function: ease-out; }
+    /* === 跳 4:18%,峰 -12 === */
+    76%  { transform: translateY(-2px); animation-timing-function: ease-out; }
+    80%  { transform: translateY(-12px); animation-timing-function: ease-in; }
+    84%  { transform: translateY(-2px); animation-timing-function: ease-in; }
+    86%  { transform: translateY(0)     scale(1.08, 0.92);    animation-timing-function: ease-out; }
+    /* === 跳 5:小颤,峰 -4 === */
+    89%  { transform: translateY(-4px); animation-timing-function: ease-in; }
+    92%  { transform: translateY(0)     scale(1.04, 0.96);    animation-timing-function: ease-out; }
+    /* === 静止 === */
+    96%, 100% { transform: translateY(0) scale(1, 1); }
+  }
+  /* Spin:每次弹跳消耗自转角度,与高度衰减同步。
+     总和 720°(2 整圈)→ 循环无缝(从 720° 直接接 0° 视觉一致)。 */
+  @keyframes ballSpin {
+    0%   { transform: rotate(0deg);   animation-timing-function: linear; }
+    33%  { transform: rotate(360deg); animation-timing-function: linear; }
+    56%  { transform: rotate(540deg); animation-timing-function: linear; }
+    72%  { transform: rotate(630deg); animation-timing-function: linear; }
+    86%  { transform: rotate(690deg); animation-timing-function: linear; }
+    92%  { transform: rotate(720deg); }
+    96%, 100% { transform: rotate(720deg); }
+  }
+  /* 阴影:球在峰时小且淡,落地时大且深。
+     时间点要和 ballBounce 的 translateY 严格对齐。 */
+  @keyframes shadowPulse {
+    0%   { transform: scaleX(1.00); opacity: .80; }
+    2%   { transform: scaleX(1.10); opacity: .90; }
+    18%  { transform: scaleX(0.45); opacity: .30; }
+    31%  { transform: scaleX(1.10); opacity: .92; }
+    45%  { transform: scaleX(0.62); opacity: .48; }
+    56%  { transform: scaleX(1.05); opacity: .85; }
+    65%  { transform: scaleX(0.76); opacity: .60; }
+    73%  { transform: scaleX(1.00); opacity: .80; }
+    80%  { transform: scaleX(0.86); opacity: .68; }
+    86%  { transform: scaleX(0.96); opacity: .76; }
+    92%  { transform: scaleX(0.98); opacity: .78; }
+    96%, 100% { transform: scaleX(1.00); opacity: .78; }
+  }
+  .loading-tip {
+    margin-top: 24px;
+    font-size: 13px;
+    letter-spacing: 0.6px;
+    opacity: 0.85;
+    /* 不闪;从左到右逐字显出 → 停留 → 末尾收一下接下一轮。
+       用 clip-path inset() 控制可见区域:右侧 inset 100% 时完全隐藏,
+       0 时完全显示。整段保持 opacity 不变,无明灭感。 */
+    animation: tipReveal 2.4s ease-out infinite;
+    -webkit-animation: tipReveal 2.4s ease-out infinite;
+  }
+  @keyframes tipReveal {
+    0%, 5%   { clip-path: inset(0 100% 0 0); -webkit-clip-path: inset(0 100% 0 0); }
+    50%      { clip-path: inset(0 0 0 0);    -webkit-clip-path: inset(0 0 0 0); }
+    92%      { clip-path: inset(0 0 0 0);    -webkit-clip-path: inset(0 0 0 0); }
+    100%     { clip-path: inset(0 0 0 100%); -webkit-clip-path: inset(0 0 0 100%); }
+  }
+  /* 调试小工具 */
+  .controls {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.45); border-radius: 24px;
+    padding: 6px 14px; font-size: 12px; color: #fff;
+    display: flex; gap: 12px; align-items: center;
+  }
+  .controls button {
+    background: rgba(255,255,255,.15); color: #fff; border: 0;
+    padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <div id="loading">
+    <div class="ball-stage">
+      <div class="shadow"></div>
+      <div class="ball" aria-label="loading">
+        <div class="ball-spin">
+          <img src="b.png" alt="" />
+        </div>
+      </div>
+    </div>
+    <div class="loading-tip">Loading…</div>
+  </div>
+  <div class="controls">
+    速度
+    <button onclick="setSpeed(0.6)">慢</button>
+    <button onclick="setSpeed(1.0)">正常</button>
+    <button onclick="setSpeed(1.6)">快</button>
+  </div>
+  <script>
+    function setSpeed(mult) {
+      const dur = (1.8 / mult).toFixed(2) + 's';
+      document.querySelectorAll('.ball, .shadow').forEach(el => el.style.animationDuration = dur);
+    }
+  </script>
+</body>
+</html>

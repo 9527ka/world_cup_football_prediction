@@ -130,6 +130,11 @@ class MatchInfo {
   final int id;
   final String home;
   final String away;
+  // Upstream apifootball team IDs — these double as api-sports CDN keys
+  // (https://media.api-sports.io/football/teams/{id}.png),so we don't have
+  // to maintain a name→id map for logo lookup.
+  final int homeId;
+  final int awayId;
   final DateTime date;
   final String status;
   final String leagueName;
@@ -148,6 +153,8 @@ class MatchInfo {
     required this.status,
     required this.leagueName,
     required this.leagueSlug,
+    this.homeId = 0,
+    this.awayId = 0,
     this.scores,
     this.mlHome,
     this.mlDraw,
@@ -163,6 +170,8 @@ class MatchInfo {
       id: (j['id'] as num).toInt(),
       home: j['home'] ?? '',
       away: j['away'] ?? '',
+      homeId: (j['homeId'] as num?)?.toInt() ?? 0,
+      awayId: (j['awayId'] as num?)?.toInt() ?? 0,
       date: DateTime.parse(j['date']).toLocal(),
       status: j['status'] ?? 'pending',
       leagueName: league['name'] ?? '',

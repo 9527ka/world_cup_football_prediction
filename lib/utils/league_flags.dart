@@ -66,6 +66,26 @@ String? leagueSlugToCountryCode(String slug) {
   return null;
 }
 
+/// 国际赛事 → api-sports 联赛 ID 映射,用于拉
+/// `https://media.api-sports.io/football/leagues/{id}.png` 作为 logo。
+/// 这些赛事没有"国家国旗"概念,但官方 CDN 上有冠名 logo。
+const Map<String, int> _internationalLeagueLogoIDs = {
+  'fifa-world-cup':                              1,
+  'international-clubs-uefa-champions-league':   2,
+  'international-clubs-uefa-europa-league':      3,
+  'international-clubs-uefa-conference-league': 848,
+  // 备用别名(后端有时省略 international-clubs- 前缀)
+  'uefa-champions-league':   2,
+  'uefa-europa-league':      3,
+  'uefa-conference-league': 848,
+};
+
+String? leagueSlugToLogoUrl(String slug) {
+  final id = _internationalLeagueLogoIDs[slug.toLowerCase()];
+  if (id == null) return null;
+  return 'https://media.api-sports.io/football/leagues/$id.png';
+}
+
 /// Small flag chip suitable for inline placement next to a league name.
 /// Falls back to a globe icon when the league has no country mapping.
 class LeagueFlag extends StatelessWidget {
@@ -84,19 +104,39 @@ class LeagueFlag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final code = leagueSlugToCountryCode(slug);
-    if (code == null) {
-      return Container(
-        height: height,
-        width: width,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: const Color(0xFFE6ECF2),
-          borderRadius: BorderRadius.circular(borderRadius),
+    final globeFallback = Container(
+      height: height,
+      width: width,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: const Color(0xFFE6ECF2),
+        borderRadius: BorderRadius.circular(borderRadius),
+      ),
+      child: Icon(Icons.public, size: height - 2, color: const Color(0xFF8C9CB1)),
+    );
+
+    // 国际赛事(欧冠 / 世界杯 等)优先用 api-sports CDN 的官方 logo,
+    // 没有"国家国旗"概念。
+    final logoUrl = leagueSlugToLogoUrl(slug);
+    if (logoUrl != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(borderRadius),
+        child: SizedBox(
+          height: height,
+          width: width,
+          child: Image.network(
+            logoUrl,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => globeFallback,
+            loadingBuilder: (ctx, child, p) => p == null ? child : globeFallback,
+          ),
         ),
-        child: Icon(Icons.public, size: height - 2, color: const Color(0xFF8C9CB1)),
       );
     }
+
+    final code = leagueSlugToCountryCode(slug);
+    if (code == null) return globeFallback;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
       child: CountryFlag.fromCountryCode(

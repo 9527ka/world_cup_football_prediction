@@ -9,6 +9,7 @@ import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
 import '../services/stream_feed.dart';
+import 'league_picker_page.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../utils/team_crests.dart';
@@ -170,7 +171,9 @@ class _MatchListPageState extends State<MatchListPage>
     try {
       final page = await widget.state.api.listMatches(
         league: _league,
-        search: _searchCtrl.text.trim(),
+        // 把中文输入(如"利物浦")翻成英文(如"Liverpool")再发后端,
+        // 后端只做 ASCII contains 匹配,不识别本地化名。
+        search: resolveTeamSearchQuery(_searchCtrl.text),
         status: _statusFilter,
         offset: offset,
         limit: _pageSize,
@@ -504,24 +507,113 @@ class _MatchListPageState extends State<MatchListPage>
       MapEntry<String?, String>(null, tr('matches.league_all')),
       ...leagues.entries.map((e) => MapEntry<String?, String>(e.key, e.value)),
     ];
+    final hasMore = _allLeagues.isNotEmpty;
     return Container(
       color: Colors.white,
       height: 42,
-      child: SingleChildScrollView(
-        controller: _chipScrollCtrl,
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      child: Row(
+        children: [
+          // 可滚动的联赛 chip 区
+          Expanded(
+            child: Stack(
+              children: [
+                SingleChildScrollView(
+                  controller: _chipScrollCtrl,
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  padding: EdgeInsets.fromLTRB(12, 6, hasMore ? 28 : 12, 6),
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < entries.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 6),
+                        _chip(entries[i]),
+                      ],
+                    ],
+                  ),
+                ),
+                // 右侧白色渐变蒙层 — 暗示"右边还有"。用 IgnorePointer 让
+                // 它不挡 chip 点击。
+                if (hasMore)
+                  const Positioned(
+                    right: 0, top: 0, bottom: 0,
+                    width: 28,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [Color(0x00FFFFFF), Color(0xFFFFFFFF)],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          // 固定"更多"按钮 — 始终可见,与可滚区有左侧细分隔线
+          if (hasMore)
+            Container(
+              padding: const EdgeInsets.fromLTRB(10, 6, 12, 6),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(
+                  left: BorderSide(color: Color(0xFFEDEDED), width: 1),
+                ),
+              ),
+              child: _moreChip(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _moreChip() {
+    return GestureDetector(
+      onTap: _openLeaguePicker,
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEAF6FE),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFB6E2FA), width: 1),
+        ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            for (var i = 0; i < entries.length; i++) ...[
-              if (i > 0) const SizedBox(width: 6),
-              _chip(entries[i]),
-            ],
+            const Icon(Icons.menu, size: 14, color: T.brandDeep),
+            const SizedBox(width: 4),
+            Text(tr('matches.league_more'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: T.brandDeep,
+                  fontWeight: FontWeight.w700,
+                )),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _openLeaguePicker() async {
+    final picked = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LeaguePickerPage(
+          leagues: _allLeagues,
+          selectedSlug: _league,
+        ),
+      ),
+    );
+    if (!mounted || picked == null) return;
+    // picker 返回 '' 表示"全部联赛",其它是 slug。
+    final slug = picked.isEmpty ? null : picked;
+    if (_league != slug) {
+      _setLeague(slug);
+      _loadPage(reset: true);
+    }
   }
 
   Widget _chip(MapEntry<String?, String> e) {
@@ -630,7 +722,10 @@ class _MatchListPageState extends State<MatchListPage>
                               ),
                               const SizedBox(width: 6),
                               TeamCrest(
-                                  name: m.home, leagueSlug: m.leagueSlug, size: 22),
+                                  name: m.home,
+                                  id: m.homeId,
+                                  leagueSlug: m.leagueSlug,
+                                  size: 22),
                             ],
                           ),
                         ),
@@ -642,7 +737,10 @@ class _MatchListPageState extends State<MatchListPage>
                           child: Row(
                             children: [
                               TeamCrest(
-                                  name: m.away, leagueSlug: m.leagueSlug, size: 22),
+                                  name: m.away,
+                                  id: m.awayId,
+                                  leagueSlug: m.leagueSlug,
+                                  size: 22),
                               const SizedBox(width: 6),
                               Flexible(
                                 child: Text(
@@ -877,6 +975,9 @@ class _MatchListPageState extends State<MatchListPage>
     }
     final upMin = ld?.minute ?? 0;
     final elapsedMin = DateTime.now().difference(m.date).inMinutes;
+    // 兜底:kickoff 已超过 150min(90+HT+ET+PEN+buffer)还在 live → 上游 feed
+    // 卡住,后端 sweeper 尚未追上。前端先显示"完",别再骗用户"还在 90'"。
+    if (elapsedMin > 150) return '完';
     int mins;
     if (upMin == 0) {
       // No upstream baseline yet — just count from kickoff, capped at 90'.

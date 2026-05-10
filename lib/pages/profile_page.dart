@@ -576,7 +576,7 @@ class _ProfilePageState extends State<ProfilePage> {
   void _goRebate() => AntiSpam.guard('nav_rebate', () => Navigator.push(context,
       MaterialPageRoute(builder: (_) => const RebatePage())));
   void _goShareEarn() => AntiSpam.guard('nav_share', () => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const ShareEarnPage())));
+      MaterialPageRoute(builder: (_) => ShareEarnPage(state: widget.state))));
   void _goVip() => AntiSpam.guard('nav_vip', () => Navigator.push(context,
       MaterialPageRoute(builder: (_) => VipPage(state: widget.state))));
   void _goRules() => AntiSpam.guard('nav_rules', () => Navigator.push(context,

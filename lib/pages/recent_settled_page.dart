@@ -258,7 +258,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
             // 主队 — 比分 — 客队
             Row(
               children: [
-                TeamCrest(name: m.home, leagueSlug: m.leagueSlug, size: 24),
+                TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 24),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(localizedTeam(m.home),
@@ -294,7 +294,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
                           color: awayWon ? T.upDark : (draw ? T.ink : T.inkLo))),
                 ),
                 const SizedBox(width: 6),
-                TeamCrest(name: m.away, leagueSlug: m.leagueSlug, size: 24),
+                TeamCrest(name: m.away, id: m.awayId, leagueSlug: m.leagueSlug, size: 24),
               ],
             ),
             const SizedBox(height: 8),

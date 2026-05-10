@@ -93,11 +93,14 @@ class ApiClient {
     return r;
   }
 
-  Future<Map<String, dynamic>> loginTelegram(String initData) async {
+  Future<Map<String, dynamic>> loginTelegram(String initData, {String startParam = ''}) async {
     final r = await http.post(
       _uri('/api/auth/telegram'),
       headers: _headers(),
-      body: jsonEncode({'initData': initData}),
+      body: jsonEncode({
+        'initData': initData,
+        if (startParam.isNotEmpty) 'startParam': startParam,
+      }),
     );
     _check(r);
     final body = jsonDecode(r.body) as Map<String, dynamic>;
@@ -315,6 +318,20 @@ class ApiClient {
     final r = await _authGet(_uri('/api/me/vip'));
     _check(r);
     return VipStatus.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+  }
+
+  /// Per-user invite code + invitation aggregate stats. Backend always
+  /// returns these three keys (numbers default to 0 for new users).
+  Future<({String inviteCode, int invitedCount, double totalCommission})>
+      getReferrals() async {
+    final r = await _authGet(_uri('/api/me/referrals'));
+    _check(r);
+    final body = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      inviteCode: (body['inviteCode'] as String?) ?? '',
+      invitedCount: (body['invitedCount'] as num?)?.toInt() ?? 0,
+      totalCommission: (body['totalCommission'] as num?)?.toDouble() ?? 0,
+    );
   }
 
   Future<LedgerResult> getLedger({String type = 'all', int limit = 50, String? before}) async {

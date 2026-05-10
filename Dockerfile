@@ -12,6 +12,19 @@ RUN flutter build web --release --no-tree-shake-icons \
       --dart-define=API_BASE=${API_BASE} \
       --dart-define=WS_BASE=${WS_BASE}
 
+# Bust upstream caches (Cloudflare / host nginx / Telegram WebView) by
+# rewriting the entry-point references with a build-time version stamp.
+# nginx.conf already sends no-cache headers for the entry files, but
+# intermediaries that ignore those headers will still see a different
+# URL each build and re-fetch.
+RUN BUILD_VER=v$(date +%s) \
+ && cd /src/build/web \
+ && cp main.dart.js main.dart.${BUILD_VER}.js \
+ && sed -i "s|\"mainJsPath\":\"main\\.dart\\.js\"|\"mainJsPath\":\"main.dart.${BUILD_VER}.js\"|" flutter_bootstrap.js \
+ && cp flutter_bootstrap.js flutter_bootstrap.${BUILD_VER}.js \
+ && sed -i "s|flutter_bootstrap\\.js|flutter_bootstrap.${BUILD_VER}.js|g" index.html \
+ && echo "${BUILD_VER}" > build_version.txt
+
 # --- runtime ---
 FROM nginx:1.27-alpine
 COPY --from=builder /src/build/web /usr/share/nginx/html

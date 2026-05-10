@@ -25,7 +25,6 @@ class AppState extends ChangeNotifier {
   Future<void> initialize() async {
     await api.loadFromStorage();
     api.onTokenExpired = _refreshToken;
-    stream.connect();
     stream.matches.listen((m) {
       matches = m;
       notifyListeners();
@@ -33,6 +32,8 @@ class AppState extends ChangeNotifier {
     if (api.token == null) {
       await tryTelegramLogin();
     }
+    // /ws now requires JWT (token query param). Connect only after we have one.
+    stream.setToken(api.token);
     await refreshMatches();
   }
 
@@ -40,7 +41,8 @@ class AppState extends ChangeNotifier {
     final initData = Telegram.initData();
     if (initData.isEmpty) return;
     try {
-      await api.loginTelegram(initData);
+      await api.loginTelegram(initData, startParam: Telegram.startParam());
+      stream.setToken(api.token);
     } catch (_) {}
   }
 
@@ -50,7 +52,8 @@ class AppState extends ChangeNotifier {
       // dev mode — backend may accept empty initData if SKIP_TELEGRAM_AUTH=true
     }
     try {
-      await api.loginTelegram(initData);
+      await api.loginTelegram(initData, startParam: Telegram.startParam());
+      stream.setToken(api.token);
       error = null;
     } catch (e) {
       error = 'login: $e';
