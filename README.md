@@ -1,136 +1,265 @@
-# Cup — Flutter Web Front-End
+# TG 足球俱乐部 · Telegram USDT 体育竞猜小程序
 
-Telegram Mini App 前端,基于 Flutter Web。承接足球赛事列表、赔率展示、下注 /
-串关 / cashout、走势图、个人钱包、充值提现等所有玩家侧界面。
+> Telegram 内嵌的 USDT 体育竞猜 Mini App。零下载、秒开、链上充提、7 大玩法、滚球实时变赔,配套完整运营管理后台。
 
-后端在另一个仓库(Go + Postgres + Redis),通过 HTTPS REST + WebSocket 通信。
+<div align="center">
+
+**需要查看演示请联系客服经理**
+
+[Telegram → @go_home_007](https://t.me/go_home_007)
+
+完整产品文档 / 截图集锦:[https://www.douwen.me/archives/617/](https://www.douwen.me/archives/617/)
+
+</div>
 
 ---
 
-## 技术栈
+## 一、用户端(Telegram Mini App)
 
-| 层 | 技术 |
+### 1. 首页 — 一眼看清钱包 + 玩法 + 热门
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/7-22701bdc.jpg" alt="首页" width="320">
+</p>
+
+- 顶部钱包卡:USDT 余额一直可见,旁边「+」一键充值
+- 五圆形快捷入口:分享赚钱 / 返水 / VIP / 客服 / 语言
+- 「足球波胆」热门比赛 + 几档热门比分赔率,「立即竞猜」直达
+- 「热门赛事 HOT MATCHES」:联赛 + LIVE 标 + 比分 + 参与人数,从众心理引导
+- 底部 5 Tab:首页 / 比赛 / 充值(中央 FAB)/ 排行 / 我的
+
+### 2. 比赛列表 — 懂球帝专业版风格
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/4-fbb76d61.jpg" alt="比赛列表" width="320">
+</p>
+
+- 顶部 Tab:全部 / 进行中 / 赛程 / 赛果
+- 联赛二级筛选条:世界杯 / 欧冠 / 欧联 / 欧协联 …「更多」展开 39 个联赛
+- 每行三段式横向布局:联赛名 + 开赛时间 / 实时分钟 + 即时比分 / 三档赔率 chip(涨跌带红绿动画)
+
+### 3. 比赛详情 — 7 大玩法一页搞定
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/2-c97f9851.jpg" alt="多市场" width="320">
+</p>
+
+| 市场 | 选项 | 特点 |
+|---|---|---|
+| 独赢 1X2 | 主胜 / 平局 / 客胜 | 经典三选一 |
+| 双胜 Double Chance | 主或平 / 平或客 / 主或客 | 三选二,中奖率翻倍 |
+| 平退本 Draw No Bet | 主胜 / 客胜 | 平局退回本金,稳健派首选 |
+| 让球 Asian Handicap | ±0.5 / ±1.5 / ±2.5 等 12 档 | 支持四分线 ±0.25 / ±0.75 拆半判定 |
+| 大小球 Over/Under | 1.5 / 2.5 / 3.5 三档可切换 | 同行多数只开 2.5 |
+| 双方进球 BTTS | 是 / 否 | 简单粗暴,转化率高 |
+| 波胆 Correct Score | 0:0 ~ 4:4 + Other | 全场比分,最高 51× 派彩 |
+
+底部固定按钮:「立即下注 · 玩法 · 选项 @ 赔率」,实时反馈。
+
+### 4. 滚球详情 — 实时变赔 + 比赛事件 + 19 格波胆
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/1-c3d08d4c.jpg" alt="滚球详情" width="320">
+</p>
+
+- Hero:主客队徽 + 即时比分 + 开赛时间
+- 1X2 三档大赔率卡 + 赔率走势折线图(主蓝 / 平灰 / 客红)
+- 滚球状态条 + 比赛事件时间线(进球时间 + 球员)
+- 19 格波胆,售罄选项显示「—」,防套利风控
+- 右上角「实时变动」标识波胆赔率每分钟刷新
+
+### 5. 我的预测 — 战绩 + 注单流水
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/3-89cb7a2d.jpg" alt="我的预测" width="320">
+</p>
+
+- Tab:单注 / 串关(关数自动统计)
+- 本月战绩卡:盈亏数字 · 命中率 · 总下注 / 已中 / 未中 / 待结算
+- 筛选 Tab:全部 / 待开赛 / 进行中 / 已中 / 未中
+- 每条注单:联赛 + 单号 + 状态徽章 + 玩法标签 + 赔率 + 投入 + 实际派彩
+
+### 6. 排行榜 — 周 / 月 / 总三档奖池
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/6-d1314862.jpg" alt="排行榜" width="320">
+</p>
+
+- Tab:本周 / 本月 / 总榜
+- 奖池数字醒目展示
+- 1/2/3 名领奖台 3D 立体效果,金银铜配色
+- 第 3 名「虚位以待」友好提示
+- 当前用户排名条 +「本期已盈利」
+
+### 7. VIP 等级 — 6 档阶梯返水
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/8-66d15939.jpg" alt="VIP" width="320">
+</p>
+
+| 等级 | 月投注门槛 | 返水率 |
+|---|---|---|
+| 普通 | 0 USDT | 0.3% |
+| 白银 | 5,000 USDT | 0.4% |
+| 黄金 | 20,000 USDT | 0.5% |
+| 铂金 | 80,000 USDT | 0.6% |
+| 钻石 | 200,000 USDT | 0.8% |
+| 至尊 | 500,000 USDT | 1.0% |
+
+升级进度条 + 下一档权益清单(返水 / 提现优先 / 专属客服)。
+
+### 8. 个人中心 — 资产 + 玩法快捷入口
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/5-eaa3d2d0.jpg" alt="个人中心" width="320">
+</p>
+
+- 顶部用户卡:头像 + 用户名 + Telegram ID + VIP 等级
+- 黑色钱包卡:USDT 余额 + 今日盈亏 + 充值 / 提现 / 明细三按钮
+- 战绩条 + 功能列表(预测 / 排行 / 返水 / 邀请 / VIP / 规则)
+
+### 9. 充值 — USDT-TRC20 · ETH · BTC
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/10-35ceec32.jpg" alt="充值" width="320">
+</p>
+
+三步走:选币种 → 复制地址 / 扫 QR 转账 → 填金额 + TxHash 提交。最小 10 USDT,到账 1-3 分钟,ETH/BTC 自动按实时汇率换 USDT。
+
+### 10. 提现 — 三链可选 · 1-3 分钟到账
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/11-5a4f97d8.jpg" alt="提现" width="320">
+</p>
+
+- TRC20(1 USDT 手续费)/ ERC20(12)/ BEP20(0.5)
+- 金额快捷预设 100 / 500 / 1K / 5K
+- 实时显示「手续费 + 实际到账 + 预计时间」
+
+### 11. 资金明细 + 竞猜规则
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/12-e684af8c.jpg" alt="资金明细" width="280">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/13-efde9468.jpg" alt="规则" width="280">
+</p>
+
+- 资金明细:本月收入 / 支出 / 净盈亏 + 五类筛选 + 按日分组流水
+- 竞猜规则:玩法 / 下注 / 结算 / 撤单 / 特殊情况,5 个模块入门一页搞定
+
+---
+
+## 二、管理后台(Bootstrap 5 + 暗色侧边栏)
+
+### 1. 总览 Dashboard
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/14-d5c91117.jpg" alt="后台总览" width="640">
+</p>
+
+9 大模块侧边栏 · 5 张核心数据卡(注册用户 / 待审充值 / 待审提现 / 累计通过)· 待审条目「前往审核 →」直达。
+
+### 2. 赛事列表 + 球队信息
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/15-21f387e9.jpg" alt="赛事列表" width="420">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/16-442e07be.jpg" alt="球队信息" width="420">
+</p>
+
+- **赛事列表**:三筛选 + 队名搜索,每场一键置顶 / 隐藏 / 结算 / 作废,上游丢比赛时手动兜底
+- **球队信息**:547 支球队逐条编辑中文名 / 英文名 / 队徽,30 秒缓存到客户端
+
+### 3. 下注记录 — 全平台注单流水
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/17-e27c52d5.jpg" alt="下注记录" width="640">
+</p>
+
+4 stat 卡(总下注 / 待结算 / 已结算 / **用户净盈亏 GGR**)+ 状态筛选 + 用户 / 比赛 / 玩法 / 赔率 / 本金 / 派彩 / 状态 完整表格。
+
+### 4. 用户管理 + 用户详情
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/18-14ef572c.jpg" alt="用户管理" width="420">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/19-b3bb39cb.jpg" alt="用户详情" width="420">
+</p>
+
+- **用户管理**:Telegram ID / 用户名搜索 + UID / 余额 / 角色 / 注册时间
+- **用户详情**(最有价值的运营工具页):一个人 = 完整画像 — 下注分布 / 资金流水 / 概览 + 下注 / 充值 / 提现 三 Tab,**一个页面看完该用户所有行为**
+
+### 5. 系统设置 — 运营文案 + 收款地址 + 客服
+
+<p align="center">
+  <img src="https://www.douwen.me/usr/uploads/2026/05/20-3a1f0fed.jpg" alt="系统设置" width="640">
+</p>
+
+- 首页跑马灯公告(每行一条按顺序轮播)
+- 收款地址(USDT-TRC20 / ETH / BTC,改后用户充值页立即生效)
+- 本周奖池文案
+- 客服 Telegram 账号(前台「在线客服」按钮跳转)
+
+此外还有 **管理员管理**(多管理员 + 按菜单粒度权限分配),结构类似,此处不再赘述。
+
+---
+
+## 三、技术亮点
+
+| 维度 | 实现 |
 |---|---|
-| 框架 | Flutter 3.27+(Web target) |
-| 语言 | Dart ≥ 3.3 |
-| 网络 | `http` + `web_socket_channel` |
-| 状态 | 内置 `ChangeNotifier` + `AppState` 单例(无 Provider/Riverpod) |
-| 多语言 | 自建 `services/i18n.dart`(zh / en,1700+ key) |
-| 国旗 / 图标 | `country_flags`、`flutter_svg` |
-| 部署 | Dockerfile(nginx:alpine 起静态),build 时注入 `API_BASE` / `WS_BASE` |
-| 宿主 | Telegram Mini App + 常规浏览器双兼容 |
+| 部署形态 | Telegram Mini App,无需上架 App Store / Google Play |
+| 前端 | Flutter Web(Dart ≥ 3.3 / Flutter 3.27+),16 国语言 i18n |
+| 后端 | Go (Gin) + WebSocket,5 个并发 worker(赛事/结算/滚球/赔率/返水) |
+| 存储 | PostgreSQL + Redis 缓存 |
+| 数据源 | API-Football Pro,39 联赛覆盖欧/亚/美/日韩/中超 |
+| 链上 | USDT-TRC20 / ERC20 / BEP20,秒级到账 |
+| 自营赔率 | 多家中位数 + 自家漂移引擎,5% 庄家利润可控 |
+| 安全 | Telegram HMAC 验签 + JWT + bcrypt + SQL 全参数化 |
+| 测试 | 44 个 e2e bot 场景,每次部署自动跑,< 1 秒完成 |
 
 ---
 
-## 目录结构
+## 四、商业卖点 TL;DR
+
+- Telegram 群引流 → deep link 一键打开 → **零注册零安装直接下注**
+- **7 大玩法**(独赢 / 双胜 / 平退本 / 让球 / 大小 / BTTS / 波胆)+ 让球四分线 + 多线大小
+- 滚球实时变赔 + 比赛事件时间线
+- 6 档 VIP 阶梯返水(0.3% → 1.0%)+ 邀请返佣 20%
+- USDT 链上充提,秒级到账
+- 完整管理后台,运营 / 客服 / 风控 / 财务一站搞定
+- 一键 docker compose 部署,改 LOGO + 客服账号即可换皮上线
+
+---
+
+## 五、开发者信息(本仓库 = Flutter Web 前端)
+
+### 目录结构
 
 ```
 frontend/
 ├── lib/
-│   ├── main.dart                 入口 + ScrollBehavior(允许鼠标拖)+ API base 解析
-│   ├── models/
-│   │   └── match.dart            Match / OddsSnapshot / MarketType 常量 / Prediction
-│   ├── pages/
-│   │   ├── main_shell.dart       底部 Tab 容器
-│   │   ├── home_page.dart        首页(banner + 直播浮窗 + 推荐)
-│   │   ├── match_list_page.dart  赛事列表(按联赛分组,懂球帝风格横向卡片)
-│   │   ├── match_detail_page.dart 单场比赛页 + 全部市场 + 走势图
-│   │   ├── bet_slip_sheet.dart   下注弹窗(单注 / 串关)
-│   │   ├── predictions_page.dart 我的注单(pending / settled / cashout)
-│   │   ├── profile_page.dart     个人资料 + 钱包 + 历史
-│   │   ├── deposit_page.dart     充值(USDT / ETH / BTC 截图审核)
-│   │   ├── withdraw_page.dart    提现申请
-│   │   ├── ledger_page.dart      资金流水
-│   │   ├── leaderboard_page.dart 排行榜
-│   │   ├── recent_settled_page.dart 最近赛果
-│   │   ├── league_picker_page.dart  联赛筛选
-│   │   └── feature_pages.dart       Sprint 1-4 玩法说明 / VIP / 月度返水
-│   ├── services/
-│   │   ├── api_client.dart       所有 REST 调用,JWT 管理,统一错误
-│   │   ├── app_state.dart        全局状态(user / wallet / 配置)
-│   │   ├── bet_slip.dart         串关注单组装
-│   │   ├── i18n.dart             翻译表 + 当前语言
-│   │   ├── odds_stream.dart      WebSocket 增量赔率推送
-│   │   ├── stream_feed.dart      直播流(7t666 浮窗)
-│   │   ├── telegram.dart         Telegram WebApp SDK 桥(用户身份 / 主题)
-│   │   ├── team_overrides.dart   球队中文名 / logo URL 缓存
-│   │   ├── player_names.dart     球员名翻译
-│   │   ├── file_picker_web.dart  Web 选图(充值截图)
-│   │   └── toast.dart            轻量 toast(无依赖)
-│   ├── widgets/
-│   │   ├── bet_slip_fab.dart     串关浮窗按钮
-│   │   ├── bottom_nav.dart       底部 Tab 栏
-│   │   ├── chain_icon.dart       串关链条图标
-│   │   ├── language_picker.dart  顶部语言切换
-│   │   ├── light_card.dart       通用浅色卡片
-│   │   ├── odds_chip.dart        赔率 chip(含状态:up / down / locked)
-│   │   ├── sparkline_chart.dart  迷你走势图
-│   │   ├── status_pill.dart      状态徽章(进行中 / 赢 / 输半 / 退本…)
-│   │   └── team_badge.dart       球队 logo + 名称组合
-│   ├── theme/tokens.dart         设计 tokens(色板 / 间距 / 字号)
-│   └── utils/                    联赛国旗 / 球队 crest / 球队名 i18n
-├── web/                          index.html(开屏 loading 动画)+ manifest
+│   ├── main.dart                 入口 + ScrollBehavior + API base 解析
+│   ├── models/match.dart         Match / OddsSnapshot / MarketType 常量
+│   ├── pages/                    14 个页面(home / list / detail / bet_slip / predictions / ...)
+│   ├── services/                 11 个服务(api / state / bet_slip / i18n / ws / telegram / ...)
+│   ├── widgets/                  9 个通用组件(odds_chip / sparkline / status_pill / ...)
+│   ├── theme/tokens.dart         设计 tokens
+│   └── utils/                    联赛国旗 / 球队 crest / 球队名
+├── web/                          index.html(开屏 loading)+ manifest
 ├── assets/                       球队 logo + icon
-├── scripts/build-web.sh          本地 build + 缓存破坏(Cloudflare cache bust)
-├── test/                         单测
-├── Dockerfile                    多阶段 build(flutter → nginx)
-├── nginx.conf                    no-cache 头 + SPA fallback
-└── pubspec.yaml
+├── scripts/build-web.sh          Cloudflare cache bust 构建脚本
+├── Dockerfile                    多阶段(flutter → nginx)
+└── nginx.conf                    no-cache 头 + SPA fallback
 ```
 
----
-
-## 支持的玩法
-
-7 种市场,与后端 / admin 后台口径一致:
-
-| `MarketType` | 中文 | 选项 score 字段约定 |
-|---|---|---|
-| `correct_score` | 波胆(全场比分) | `"H:A"` 例:`"2:1"`、`"Other"` 兜底 |
-| `over_under_2_5` | 大小球(多线 1.5 / 2.5 / 3.5) | `"over@2.5"` / `"under@1.5"` |
-| `btts` | 双方都进球 | `"yes"` / `"no"` |
-| `match_winner` | 独赢 1X2 | `"home"` / `"draw"` / `"away"` |
-| `asian_handicap` | 亚盘让球 | `"home@-0.5"` / `"away@+1.5"`(支持四分线如 `"home@-0.25"`) |
-| `double_chance` | 双胜 | `"1X"` / `"X2"` / `"12"` |
-| `draw_no_bet` | 平局退本 | `"home"` / `"away"` |
-
-注单状态(`Prediction.status`):
-`pending` · `won` · `lost` · `void` · `pushed`(整数线平局退本) ·
-`half_won` / `half_lost`(亚盘四分线半赢半输) · `cashed_out`
-
----
-
-## 本地运行
-
-需要 Flutter SDK ≥ 3.27.0(主要为了 `Color.withValues` / `Color.r/g/b` API)。
+### 本地运行
 
 ```bash
-cd frontend
 flutter pub get
 flutter run -d chrome \
   --dart-define=API_BASE=https://cup.douwen.me \
   --dart-define=WS_BASE=wss://cup.douwen.me/ws
 ```
 
-留空 `API_BASE` 时,代码会回退到当前页面 origin(部署在同域时自然 work)。
-
-### 跑测试
-
-```bash
-flutter test
-```
-
-### 本地构建 Web 产物
-
-```bash
-bash scripts/build-web.sh --dart-define=API_BASE=https://cup.douwen.me
-```
-
-产物在 `build/web/`,包含 `flutter_bootstrap.js` 时间戳后缀防 Cloudflare 缓存。
-
----
-
-## Docker 构建
+### Docker 构建
 
 ```bash
 docker build -t cup-frontend \
@@ -139,61 +268,27 @@ docker build -t cup-frontend \
 docker run -p 8080:80 cup-frontend
 ```
 
-镜像基于 `nginx:1.27-alpine`,`nginx.conf` 已设置:
-- entry-point 文件(`index.html` / `flutter_bootstrap.js` / `main.dart.js`)`no-cache`
-- 其它资源 `immutable max-age=31536000`(配合 build-time 版本戳)
-- SPA fallback:任何未匹配路径返回 `index.html`
-
----
-
-## Telegram Mini App 适配要点
-
-- `web/index.html` 引入 `telegram-web-app.js`,`services/telegram.dart` 桥接
-  `Telegram.WebApp.initData` 拿 telegram_id 完成无密码登录
-- `ScrollBehavior` 在 `main.dart` 全局放开 mouse / trackpad 拖动,默认 Material
-  scroll 会禁掉 desktop / Mini App WebView 的鼠标拖,导致"滚不动"
-- 主题颜色与 Telegram 暗色风格匹配(`background: #0a1929`),开屏 loading
-  做了一个跳动足球的 CSS 动画占位
-
----
-
-## 常见踩坑(实际遇到过的)
-
-1. **`Container(alignment:)` 撑屏** — Container 同时设 `alignment` + 子组件
-   `Expanded` 时会强制占满父 constraint,横向卡片会被拉伸成全屏。改用
-   `Align` + `Padding` 而不是 Container 的 alignment 属性。
-2. **`Chip(...).withLimit` 限宽** — 用 `ConstrainedBox(maxWidth: ...)` 包,
-   不要给 Chip 直接设 `width`(Chip 会忽略)。
-3. **`league.name` 双格式** — 后端有时返回 `"Spain - LaLiga"`,有时
-   `"LaLiga"`。在 `utils/league_flags.dart` 里两种都映射。
-4. **`Color.withOpacity` 过时** — Flutter 3.27 改成 `Color.withValues(alpha: x)`。
-   `flutter analyze` 会告警 deprecated,新写法用 `withValues`。
-5. **球队 logo 跨域** — 上游 API-Football logo 用 CDN URL,Flutter Web 在
-   Telegram WebView 内偶尔会被 CORS 拦。本地缓存到 `assets/team_logos/` 加
-   一层 fallback 兜底。
-
----
-
-## 与后端的契约
+### 与后端契约
 
 | 路径 | 用途 |
 |---|---|
-| `GET /api/matches` | 赛事列表(支持 `status=pending\|live\|all`) |
+| `GET /api/matches` | 赛事列表 |
 | `GET /api/matches/:id` | 单场详情 |
-| `GET /api/odds/:matchID` | 实时赔率快照(7 市场全) |
+| `GET /api/odds/:matchID` | 7 市场实时赔率快照 |
 | `GET /api/odds/:matchID/history` | 走势图历史点 |
 | `POST /api/predictions` | 下单注 |
 | `POST /api/parlays` | 下串关 |
 | `POST /api/predictions/:id/cashout` | 提前结算 |
-| `POST /api/parlays/:id/cashout` | 串关提前结算 |
 | `WS  /ws` | 增量赔率 + 比分推送 |
-
-完整接口在后端 `internal/api/handlers.go`。前端调用集中在
-`lib/services/api_client.dart`,任何字段变化必须同步两端。
 
 ---
 
-## 部署
+<div align="center">
 
-前端会随 backend 一起,通过 `docker-compose` 在生产服一键起栈。详情见根目录
-的 `docker-compose.yml`。Cloudflare CDN 在前面做边缘缓存。
+## 需要查看演示请联系客服经理
+
+[Telegram → @go_home_007](https://t.me/go_home_007)
+
+完整产品文档(图文版):[https://www.douwen.me/archives/617/](https://www.douwen.me/archives/617/)
+
+</div>
