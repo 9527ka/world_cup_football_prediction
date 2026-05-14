@@ -791,7 +791,10 @@ void _openTelegramChat(BuildContext ctx, String username) {
 }
 
 class CustomerServicePage extends StatelessWidget {
-  const CustomerServicePage({super.key});
+  const CustomerServicePage({super.key, this.state});
+
+  /// 客服账号来源:后台 /admin/settings 配置(走 AppState 缓存)。state 缺失时回退默认值。
+  final AppState? state;
 
   static const _faqKeys = <List<String>>[
     ['feat.cs.q1', 'feat.cs.a1'],
@@ -800,8 +803,20 @@ class CustomerServicePage extends StatelessWidget {
     ['feat.cs.q4', 'feat.cs.a4'],
   ];
 
+  String get _csHandle => state?.customerServiceTG ?? 'go_home_007';
+
   @override
   Widget build(BuildContext context) {
+    final s = state;
+    if (s == null) return _buildBody(context);
+    // 监听 AppState:首次 home/config 拉回时刷新 handle。
+    return AnimatedBuilder(
+      animation: s,
+      builder: (_, __) => _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
     return Scaffold(
       appBar: _appBar(context, tr('feat.cs.title')),
       body: DecoratedBox(
@@ -839,11 +854,12 @@ class CustomerServicePage extends StatelessWidget {
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
-                        children: const [
-                          Icon(Icons.telegram, size: 20, color: Colors.white),
-                          SizedBox(width: 6),
-                          Text('@go_home_007',
-                              style: TextStyle(
+                        children: [
+                          const Icon(Icons.telegram,
+                              size: 20, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Text('@$_csHandle',
+                              style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w700,
                                   color: Colors.white)),
@@ -928,7 +944,7 @@ class CustomerServicePage extends StatelessWidget {
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
-                      onTap: () => _openTelegramChat(context, 'go_home_007'),
+                      onTap: () => _openTelegramChat(context, _csHandle),
                       borderRadius: BorderRadius.circular(T.rSm),
                       child: Center(
                         child: Row(

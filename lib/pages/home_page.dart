@@ -516,7 +516,7 @@ class _HomePageState extends State<HomePage> {
         page = VipPage(state: widget.state);
         break;
       case 'home.service':
-        page = const CustomerServicePage();
+        page = CustomerServicePage(state: widget.state);
         break;
     }
     if (page != null) {

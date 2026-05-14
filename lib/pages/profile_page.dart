@@ -582,7 +582,7 @@ class _ProfilePageState extends State<ProfilePage> {
   void _goRules() => AntiSpam.guard('nav_rules', () => Navigator.push(context,
       MaterialPageRoute(builder: (_) => const RulesPage())));
   void _goService() => AntiSpam.guard('nav_service', () => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const CustomerServicePage())));
+      MaterialPageRoute(builder: (_) => CustomerServicePage(state: widget.state))));
   void _goAbout() => _showAbout();
 
   void _showAbout() {
@@ -602,7 +602,8 @@ class _ProfilePageState extends State<ProfilePage> {
             Text(tr('profile.about_desc'),
                 style: const TextStyle(fontSize: 13, color: T.inkMd, height: 1.5)),
             const SizedBox(height: 12),
-            Text(tr('profile.about_contact'),
+            Text(tr('profile.about_contact')
+                    .replaceAll('{handle}', '@${widget.state.customerServiceTG}'),
                 style: const TextStyle(fontSize: 12, color: T.inkLo)),
             Text(tr('profile.about_copyright'),
                 style: const TextStyle(fontSize: 12, color: T.inkLo)),

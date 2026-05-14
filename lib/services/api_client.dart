@@ -1,8 +1,17 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/match.dart';
+
+/// 生成一个 32 字符 hex 的幂等 key(等同 UUID v4 但去掉分隔符)。
+/// 安全性来自 Random.secure(),冲突概率 1/2^128 ≈ 0。后端只要 16~128 字符。
+String _generateIdempotencyKey() {
+  final rnd = Random.secure();
+  final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+  return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
 
 typedef TokenRefresher = Future<void> Function();
 
@@ -65,8 +74,10 @@ class ApiClient {
     return r;
   }
 
-  Future<http.Response> _authPost(Uri uri, {Object? body}) async {
-    var r = await http.post(uri, headers: _headers(auth: true), body: body);
+  Future<http.Response> _authPost(Uri uri, {Object? body, Map<String, String>? extraHeaders}) async {
+    final h = _headers(auth: true);
+    if (extraHeaders != null) h.addAll(extraHeaders);
+    var r = await http.post(uri, headers: h, body: body);
     if (r.statusCode == 401 && onTokenExpired != null && !_refreshing) {
       _refreshing = true;
       try {
@@ -74,7 +85,11 @@ class ApiClient {
       } finally {
         _refreshing = false;
       }
-      r = await http.post(uri, headers: _headers(auth: true), body: body);
+      // 401 自动刷 token 后重试 —— 这里复用 extraHeaders(包括 Idempotency-Key),
+      // 后端看到同 key 第二次仍会走 cache 命中分支,不会真的重复下单。
+      final h2 = _headers(auth: true);
+      if (extraHeaders != null) h2.addAll(extraHeaders);
+      r = await http.post(uri, headers: h2, body: body);
     }
     return r;
   }
@@ -451,13 +466,22 @@ class ApiClient {
     return Withdrawal.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
 
+  /// 提交串关。
+  ///
+  /// [idempotencyKey] 可选 —— 同一逻辑意图(用户一次"投注"动作)若需要重试,
+  /// 传相同 key 后端会去重(返回首次创建的 parlay,不会重复扣 stake)。
+  /// 调用方应跨 retry 保留 key,成功后再丢弃。caller 不传时由本方法生成一次性
+  /// key(只能防 HTTP 层 401 重发,不防 caller 自己再调一次)。
   Future<Parlay> submitParlay({
     required double stake,
     required List<Map<String, dynamic>> legs,
+    String? idempotencyKey,
   }) async {
+    final key = idempotencyKey ?? _generateIdempotencyKey();
     final r = await _authPost(
       _uri('/api/parlays'),
       body: jsonEncode({'stake': stake, 'legs': legs}),
+      extraHeaders: {'Idempotency-Key': key},
     );
     _check(r);
     return Parlay.fromJson(jsonDecode(r.body) as Map<String, dynamic>);

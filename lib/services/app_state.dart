@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../models/match.dart';
@@ -19,6 +21,9 @@ class AppState extends ChangeNotifier {
   bool loadingMatches = false;
   String? error;
 
+  // 客服 Telegram 用户名(不带 @)。后台 /admin/settings 可配置;首次加载前用默认值。
+  String customerServiceTG = 'go_home_007';
+
   bool get isAuthenticated => api.token != null;
   Map<String, dynamic>? get user => api.user;
 
@@ -35,6 +40,16 @@ class AppState extends ChangeNotifier {
     // /ws now requires JWT (token query param). Connect only after we have one.
     stream.setToken(api.token);
     await refreshMatches();
+    // 拉一次 home/config(客服账号/周奖池)。失败保留默认值,不影响登录主流程。
+    unawaited(_refreshHomeConfig());
+  }
+
+  Future<void> _refreshHomeConfig() async {
+    try {
+      final cfg = await api.homeConfig();
+      customerServiceTG = cfg.customerService;
+      notifyListeners();
+    } catch (_) {/* 默认值兜底 */}
   }
 
   Future<void> _refreshToken() async {

@@ -657,13 +657,20 @@ class _MatchListPageState extends State<MatchListPage>
     final sorted = List<MatchInfo>.from(ms);
     if (_tab == _Tab.all) {
       sorted.sort((a, b) {
+        if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
         if (a.isLive != b.isLive) return a.isLive ? -1 : 1;
         return a.date.compareTo(b.date);
       });
     } else if (_tab == _Tab.results) {
-      sorted.sort((a, b) => b.date.compareTo(a.date));
+      sorted.sort((a, b) {
+        if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
+        return b.date.compareTo(a.date);
+      });
     } else {
-      sorted.sort((a, b) => a.date.compareTo(b.date));
+      sorted.sort((a, b) {
+        if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
+        return a.date.compareTo(b.date);
+      });
     }
     return sorted;
   }
@@ -950,20 +957,21 @@ class _MatchListPageState extends State<MatchListPage>
     );
   }
 
-  /// Live minute display, derived from kickoff time so it ticks locally
-  /// without requiring a backend push.
+  /// Live minute display.
   ///
-  /// Upstream is authoritative for non-running phases (HT / PEN / stoppage)
-  /// and for the "we're in the second half" signal (upstream minute > 45).
-  /// In between, we take max(upstream, computed-elapsed) so the on-screen
-  /// minute keeps advancing every wall-clock minute even when the backend's
-  /// liveLoop hasn't fired in a while.
+  /// Source of truth is the upstream minute (`ld.minute`), captured at
+  /// `ld.asOf` server-side. We locally advance by `(now - asOf)/60s`,
+  /// capped at +2 minutes — that's enough to keep the on-screen number
+  /// from looking frozen between liveLoop ticks (which run every ~1min),
+  /// but not so much that we'd overshoot reality when the backend lags.
   ///
-  /// Halftime gap heuristic: if upstream says ≤ 45, we cap our local advance
-  /// at 45 (we don't know exactly when HT starts, so we'd rather sit at 45
-  /// than tick into a fictitious 47'). Once upstream confirms second half by
-  /// reporting > 45, we subtract a 15-minute break from elapsed-since-kickoff
-  /// before comparing.
+  /// Why not advance from kickoff time? Real matches have late kickoffs,
+  /// long stoppages, oversized halftime breaks and VAR pauses — adding
+  /// `(now − kickoff − 15min)` overcounts by several minutes (e.g. our
+  /// app showed 76' while 懂球帝 said 68' for the same match because we
+  /// were adding wall-clock time the match wasn't actually playing).
+  ///
+  /// Same half-cap rules apply: 1H clamped to 45', regulation to 90'.
   String _liveMinuteText(MatchInfo m) {
     final ld = m.live;
     if (ld != null) {
@@ -974,23 +982,35 @@ class _MatchListPageState extends State<MatchListPage>
       if (ld.extra > 0) return '${ld.minute}+${ld.extra}\''; // stoppage time
     }
     final upMin = ld?.minute ?? 0;
-    final elapsedMin = DateTime.now().difference(m.date).inMinutes;
+    final elapsedFromKickoff = DateTime.now().difference(m.date).inMinutes;
     // 兜底:kickoff 已超过 150min(90+HT+ET+PEN+buffer)还在 live → 上游 feed
     // 卡住,后端 sweeper 尚未追上。前端先显示"完",别再骗用户"还在 90'"。
-    if (elapsedMin > 150) return '完';
+    if (elapsedFromKickoff > 150) return '完';
+
     int mins;
     if (upMin == 0) {
-      // No upstream baseline yet — just count from kickoff, capped at 90'.
-      mins = elapsedMin.clamp(1, 90);
-    } else if (upMin <= 45) {
-      // First half. Cap local tick at 45'; HT may start any second now.
-      final advance = elapsedMin > upMin ? elapsedMin : upMin;
-      mins = advance > 45 ? 45 : advance;
+      // 上游尚未给出基线(刚开赛 / liveLoop 还没跑过)— 退化为从 kickoff 数,
+      // 这是仅有的兜底信号,封顶 45'(还不知道是不是已经到中场)。
+      mins = elapsedFromKickoff.clamp(1, 45);
     } else {
-      // Second half. Subtract a ~15min HT break from elapsed before comparing.
-      final adj = elapsedMin - 15;
-      final advance = adj > upMin ? adj : upMin;
-      mins = advance > 90 ? 90 : advance;
+      // 关键路径:从 asOf 自走,而不是 kickoff。封顶 +2min 避免后端长时间
+      // 不更新时画面失真。
+      var advance = upMin;
+      final asOf = ld?.asOf;
+      if (asOf != null) {
+        final since = DateTime.now().difference(asOf).inSeconds;
+        if (since > 0) {
+          final addMin = (since ~/ 60).clamp(0, 2);
+          advance = upMin + addMin;
+        }
+      }
+      // 半场封顶:1H ≤ 45,常规时间 ≤ 90。点球 / 加时已在上面 period 分支处理。
+      if (upMin <= 45) {
+        if (advance > 45) advance = 45;
+      } else {
+        if (advance > 90) advance = 90;
+      }
+      mins = advance;
     }
     if (mins < 1) mins = 1;
     return "$mins'";

@@ -27,6 +27,12 @@ class _PredictionsPageState extends State<PredictionsPage> {
   String _topTab = 'single'; // 'single' | 'parlay'
   late Future<_MyBetsBundle> _future;
 
+  // cashout 正在进行中的注单 id —— 防止用户连点同一条注单多次,后端虽然有
+  // status guard 不会重复派钱,但前端会弹多次 Toast。Set 而非 bool 因为
+  // 列表里可能同时有多条 pending 注单。
+  final Set<int> _cashingOutBets = <int>{};
+  final Set<int> _cashingOutParlays = <int>{};
+
   @override
   void initState() {
     super.initState();
@@ -377,7 +383,8 @@ class _PredictionsPageState extends State<PredictionsPage> {
       ),
     );
     if (ok != true) return;
-
+    if (_cashingOutBets.contains(pred.id)) return; // 重入保险:确认框关闭间隙再点
+    setState(() => _cashingOutBets.add(pred.id));
     try {
       final result = await widget.state.api.cashOutPrediction(pred.id);
       if (!mounted) return;
@@ -387,6 +394,8 @@ class _PredictionsPageState extends State<PredictionsPage> {
     } catch (e) {
       if (!mounted) return;
       Toast.error(context, e.toString());
+    } finally {
+      if (mounted) setState(() => _cashingOutBets.remove(pred.id));
     }
   }
 
@@ -536,12 +545,19 @@ class _PredictionsPageState extends State<PredictionsPage> {
       'all': all.length,
       'pending': all.where((b) => b.effectiveStatus == 'pending').length,
       'live': all.where((b) => b.effectiveStatus == 'live').length,
-      'won': all.where((b) => b.effectiveStatus == 'won').length,
-      'lost': all.where((b) => b.effectiveStatus == 'lost').length,
+      // half_won 算入 won 标签;half_lost 算入 lost。push 单独不显示在 won/lost
+      // 标签里(只在卡片状态徽章里出现)。
+      'won': all.where((b) => b.effectiveStatus == 'won' || b.effectiveStatus == 'half_won').length,
+      'lost': all.where((b) => b.effectiveStatus == 'lost' || b.effectiveStatus == 'half_lost').length,
     };
     final filtered = _tab == 'all'
         ? all
-        : all.where((b) => b.effectiveStatus == _tab).toList();
+        : all.where((b) {
+            final s = b.effectiveStatus;
+            if (_tab == 'won') return s == 'won' || s == 'half_won';
+            if (_tab == 'lost') return s == 'lost' || s == 'half_lost';
+            return s == _tab;
+          }).toList();
     return [
       _statsHero(bundle.stats),
       _tabs(counts),
@@ -651,8 +667,9 @@ class _PredictionsPageState extends State<PredictionsPage> {
     final fmt = DateFormat('MM-dd HH:mm');
     final pred = b.prediction;
     final eff = b.effectiveStatus;
-    final isWon = eff == 'won';
-    final isLost = eff == 'lost';
+    // half_won 视觉上算赢(让卡片绿色徽章+正向 payout);half_lost 算输(红色)。
+    final isWon = eff == 'won' || eff == 'half_won';
+    final isLost = eff == 'lost' || eff == 'half_lost';
     final isLive = eff == 'live';
     final isPending = eff == 'pending';
 
@@ -865,7 +882,9 @@ class _PredictionsPageState extends State<PredictionsPage> {
                       // 已中/未中/已提结的不显示。
                       if (isPending || isLive)
                         TextButton.icon(
-                          onPressed: () => _confirmCashout(b),
+                          onPressed: _cashingOutBets.contains(b.prediction.id)
+                              ? null
+                              : () => _confirmCashout(b),
                           icon: const Icon(Icons.savings_outlined, size: 14, color: T.brandDeep),
                           label: Text(tr('pred.cashout_btn'),
                               style: const TextStyle(
@@ -911,6 +930,18 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
       case 'lost':
         statusColor = T.down;
         statusLabel = tr('pred.status_lost');
+        break;
+      case 'pushed':
+        statusColor = T.gold;
+        statusLabel = '退本';
+        break;
+      case 'half_won':
+        statusColor = T.up;
+        statusLabel = '赢半 (退一半 + 赢一半)';
+        break;
+      case 'half_lost':
+        statusColor = T.down;
+        statusLabel = '输半 (退一半)';
         break;
       default:
         statusColor = T.gold;
@@ -1036,7 +1067,9 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                     p.legs.any((l) => l.legStatus == 'pending')) ...[
                   const SizedBox(width: 8),
                   TextButton.icon(
-                    onPressed: () => _confirmParlayCashout(p),
+                    onPressed: _cashingOutParlays.contains(p.id)
+                        ? null
+                        : () => _confirmParlayCashout(p),
                     icon: const Icon(Icons.flash_on, size: 14, color: T.brandDeep),
                     label: Text(tr('pred.cashout_btn'),
                         style: const TextStyle(
@@ -1112,6 +1145,8 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
       ),
     );
     if (ok != true) return;
+    if (_cashingOutParlays.contains(p.id)) return;
+    setState(() => _cashingOutParlays.add(p.id));
     try {
       final result = await widget.state.api.cashOutParlay(p.id);
       if (!mounted) return;
@@ -1121,6 +1156,8 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
     } catch (e) {
       if (!mounted) return;
       Toast.error(context, e.toString());
+    } finally {
+      if (mounted) setState(() => _cashingOutParlays.remove(p.id));
     }
   }
 }
@@ -1140,9 +1177,18 @@ class _MyBetsBundle {
 String _selectionLabel(String marketType, String score) {
   switch (marketType) {
     case MarketType.overUnder25:
-      if (score == 'over') return tr('pred.ou_over');
-      if (score == 'under') return tr('pred.ou_under');
-      return score;
+      // score 可能是 'over' / 'under'(legacy = line 2.5)或 'over@1.5' / 'under@3.5'。
+      final at = score.lastIndexOf('@');
+      String side = score;
+      String? line;
+      if (at > 0 && at < score.length - 1) {
+        side = score.substring(0, at);
+        line = score.substring(at + 1);
+      }
+      final sideLabel = side == 'over' ? tr('pred.ou_over') : tr('pred.ou_under');
+      // 显示 line:线 2.5 时省略(老体验),其它线追加 "(1.5)" 后缀
+      if (line == null || line == '2.5') return sideLabel;
+      return '$sideLabel ($line)';
     case MarketType.btts:
       if (score == 'yes') return tr('pred.btts_yes');
       if (score == 'no') return tr('pred.btts_no');
@@ -1152,6 +1198,18 @@ String _selectionLabel(String marketType, String score) {
       if (score == 'draw') return '${tr('detail.winner_title')} · ${tr('detail.draw')}';
       if (score == 'away') return '${tr('detail.winner_title')} · ${tr('detail.win_away')}';
       return score;
+    case MarketType.doubleChance:
+      // score: "1X" | "X2" | "12"
+      switch (score) {
+        case '1X': return '双胜 · 主或平';
+        case 'X2': return '双胜 · 平或客';
+        case '12': return '双胜 · 主或客';
+      }
+      return '双胜 · $score';
+    case MarketType.drawNoBet:
+      if (score == 'home') return '平退本 · 主胜';
+      if (score == 'away') return '平退本 · 客胜';
+      return '平退本 · $score';
     case MarketType.asianHandicap:
       // score 形如 "home@-0.5" / "away@+1.5"
       final at = score.lastIndexOf('@');

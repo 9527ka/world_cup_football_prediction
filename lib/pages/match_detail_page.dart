@@ -50,6 +50,15 @@ class _BetSelection {
   String get key => '$marketType::$score';
 }
 
+// _normalizeScoreKey — 把 legacy O/U score ('over'/'under') 规范化到带 line 形式
+// ('over@2.5' / 'under@2.5'),让 _myBets 命中 UI build 出来的 key。其他市场原样返回。
+String _normalizeScoreKey(String marketType, String score) {
+  if (marketType != MarketType.overUnder25) return score;
+  if (score.contains('@')) return score;
+  if (score == 'over' || score == 'under') return '$score@2.5';
+  return score;
+}
+
 class _MatchDetailPageState extends State<MatchDetailPage> {
   OddsSnapshot? _odds;
   _BetSelection? _selected;
@@ -204,16 +213,39 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         }
         return 0;
       case MarketType.overUnder25:
-        final ou = s.overUnder;
-        if (ou == null) return 0;
-        if (sel.score == 'over') return ou.over;
-        if (sel.score == 'under') return ou.under;
+        // score 形如 'over@2.5' / 'under@1.5' / 'over' / 'under'(legacy = 2.5)
+        final at = sel.score.lastIndexOf('@');
+        final side = at > 0 ? sel.score.substring(0, at) : sel.score;
+        final line = at > 0 ? double.tryParse(sel.score.substring(at + 1)) ?? 2.5 : 2.5;
+        OverUnderLine? ouLine;
+        for (final ou in s.overUnders) {
+          if ((ou.line - line).abs() < 0.01) { ouLine = ou; break; }
+        }
+        ouLine ??= (line == 2.5 ? s.overUnder : null);
+        if (ouLine == null) return 0;
+        if (side == 'over') return ouLine.over;
+        if (side == 'under') return ouLine.under;
         return 0;
       case MarketType.btts:
         final b = s.btts;
         if (b == null) return 0;
         if (sel.score == 'yes') return b.yes;
         if (sel.score == 'no') return b.no;
+        return 0;
+      case MarketType.doubleChance:
+        final dc = s.doubleChance;
+        if (dc == null) return 0;
+        switch (sel.score) {
+          case '1X': return dc.homeOrDraw;
+          case 'X2': return dc.drawOrAway;
+          case '12': return dc.homeOrAway;
+        }
+        return 0;
+      case MarketType.drawNoBet:
+        final dnb = s.drawNoBet;
+        if (dnb == null) return 0;
+        if (sel.score == 'home') return dnb.home;
+        if (sel.score == 'away') return dnb.away;
         return 0;
       case MarketType.matchWinner:
         final ml = s.moneyLine;
@@ -337,7 +369,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       final m = <String, double>{};
       for (final p in preds) {
         if (p.matchId != widget.match.id) continue;
-        final key = '${p.marketType}::${p.score}';
+        final key = '${p.marketType}::${_normalizeScoreKey(p.marketType, p.score)}';
         m[key] = (m[key] ?? 0) + p.stake;
       }
       if (mounted) {
@@ -401,7 +433,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         stake: _stake,
       );
       if (!mounted) return;
-      final key = '${p.marketType}::${p.score}';
+      final key = '${p.marketType}::${_normalizeScoreKey(p.marketType, p.score)}';
       setState(() {
         _placeOK = tr('detail.ok_locked')
             .replaceAll('{label}', sel.label)
@@ -469,6 +501,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     _columnLabels(),
                     _scoreGrid(),
                     _winnerSection(),
+                    _doubleChanceSection(),
+                    _drawNoBetSection(),
                     _handicapSection(),
                     _overUnderSection(),
                     _bttsSection(),
@@ -760,15 +794,15 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [Color(0x1AE03E2D), Color(0x08E03E2D)],
+            colors: [Color(0x1A4CAF50), Color(0x084CAF50)],
           ),
-          border: Border.all(color: const Color(0x3AE03E2D)),
+          border: Border.all(color: const Color(0x3A4CAF50)),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
           children: [
             Text(tr('detail.locked_banner_title'),
-                style: const TextStyle(fontSize: 12, color: T.down, fontWeight: FontWeight.w800)),
+                style: const TextStyle(fontSize: 12, color: T.upDark, fontWeight: FontWeight.w800)),
             const SizedBox(width: 8),
             Expanded(
               child: Text(tr('detail.locked_banner_desc'),
@@ -1185,11 +1219,36 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     );
   }
 
-  // ── 大小球 (over/under 2.5) ─────────────────────────────────────
+  // ── 大小球 (多线 over/under 1.5 / 2.5 / 3.5) ─────────────────────────
+  // 多线时:渲染 line chip(picker)+ 当前选中 line 的两个 over/under 按钮。
+  // 老数据只有 line=2.5 一条 → picker 只显示一颗 chip,等价旧 UI。
   Widget _overUnderSection() {
-    final ou = _odds?.overUnder;
-    if (ou == null) return const SizedBox.shrink();
-    final lineFmt = ou.line.toStringAsFixed(1);
+    // 合并:overUnders 优先(多线),没有则 fallback 单条 overUnder。
+    final List<OverUnderLine> lines = _odds?.overUnders.isNotEmpty == true
+        ? _odds!.overUnders
+        : (_odds?.overUnder != null ? [_odds!.overUnder!] : const []);
+    if (lines.isEmpty) return const SizedBox.shrink();
+
+    // 当前选中 line:
+    //  - 若 _selected 是 OU 选项,从 score 解析(over@1.5 → 1.5);
+    //  - 否则默认 line=2.5(若存在),不存在用第一条。
+    double selectedLine;
+    if (_selected?.marketType == MarketType.overUnder25) {
+      final s = _selected!.score;
+      final at = s.lastIndexOf('@');
+      selectedLine = at > 0 ? double.tryParse(s.substring(at + 1)) ?? 2.5 : 2.5;
+    } else {
+      selectedLine = lines.any((l) => l.line == 2.5) ? 2.5 : lines.first.line;
+    }
+    // 防御:selectedLine 必须在 lines 集合内
+    if (!lines.any((l) => (l.line - selectedLine).abs() < 0.01)) {
+      selectedLine = lines.first.line;
+    }
+    final currentLine = lines.firstWhere((l) => (l.line - selectedLine).abs() < 0.01);
+    final lineFmt = currentLine.line.toStringAsFixed(1);
+    final overScore = 'over@$lineFmt';
+    final underScore = 'under@$lineFmt';
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
       child: Column(
@@ -1207,23 +1266,72 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               ],
             ),
           ),
+          // line picker:多线时显示,单线时省略(等价旧 UI)。
+          if (lines.length > 1) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, left: 2),
+              child: Wrap(
+                spacing: 6,
+                children: lines.map((l) {
+                  final fmt = l.line.toStringAsFixed(1);
+                  final sel = (l.line - selectedLine).abs() < 0.01;
+                  return ChoiceChip(
+                    label: Text(fmt, style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: sel ? FontWeight.w800 : FontWeight.w600,
+                      color: sel ? Colors.white : T.ink,
+                    )),
+                    selected: sel,
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    selectedColor: T.brandDeep,
+                    backgroundColor: const Color(0xFFEAF1F8),
+                    onSelected: (_) => setState(() {
+                      // 切换 line 时,如果当前选了 over/under,把 selection 迁移到新 line。
+                      if (_selected?.marketType == MarketType.overUnder25) {
+                        final atIdx = _selected!.score.lastIndexOf('@');
+                        final side = atIdx > 0 ? _selected!.score.substring(0, atIdx) : _selected!.score;
+                        final newScore = '$side@$fmt';
+                        final p = side == 'over' ? l.over : l.under;
+                        _selected = _BetSelection(
+                          marketType: MarketType.overUnder25,
+                          score: newScore,
+                          price: p,
+                          label: tr(side == 'over' ? 'detail.ou_over_label' : 'detail.ou_under_label')
+                              .replaceAll('{line}', fmt),
+                        );
+                      } else {
+                        // 没选时只刷新 picker,不创建 selection。
+                        _selected = _BetSelection(
+                          marketType: MarketType.overUnder25,
+                          score: '__line_pick__@$fmt',
+                          price: 0,
+                          label: '',
+                        );
+                      }
+                    }),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
           Row(
             children: [
               Expanded(
                 child: _BinaryBetTile(
                   label: '${tr('detail.ou_over')} $lineFmt',
                   hint: tr('detail.ou_hint_over'),
-                  price: ou.over,
+                  price: currentLine.over,
                   selected: _selected?.marketType == MarketType.overUnder25 &&
-                            _selected?.score == 'over',
-                  myStake: _myBets['${MarketType.overUnder25}::over'],
-                  inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::over'),
+                            _selected?.score == overScore,
+                  myStake: _myBets['${MarketType.overUnder25}::$overScore'],
+                  inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::$overScore'),
                   locked: _locked,
                   accent: T.up,
                   onTap: () => setState(() => _selected = _BetSelection(
                         marketType: MarketType.overUnder25,
-                        score: 'over',
-                        price: ou.over,
+                        score: overScore,
+                        price: currentLine.over,
                         label: tr('detail.ou_over_label').replaceAll('{line}', lineFmt),
                       )),
                 ),
@@ -1233,17 +1341,17 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 child: _BinaryBetTile(
                   label: '${tr('detail.ou_under')} $lineFmt',
                   hint: tr('detail.ou_hint_under'),
-                  price: ou.under,
+                  price: currentLine.under,
                   selected: _selected?.marketType == MarketType.overUnder25 &&
-                            _selected?.score == 'under',
-                  myStake: _myBets['${MarketType.overUnder25}::under'],
-                  inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::under'),
+                            _selected?.score == underScore,
+                  myStake: _myBets['${MarketType.overUnder25}::$underScore'],
+                  inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::$underScore'),
                   locked: _locked,
                   accent: T.down,
                   onTap: () => setState(() => _selected = _BetSelection(
                         marketType: MarketType.overUnder25,
-                        score: 'under',
-                        price: ou.under,
+                        score: underScore,
+                        price: currentLine.under,
                         label: tr('detail.ou_under_label').replaceAll('{line}', lineFmt),
                       )),
                 ),
@@ -1404,6 +1512,127 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  // ── 双胜 Double Chance(1X / X2 / 12)──────────────────────────────
+  // 三个选项一行,从 1X2 派生,价格由后端 DeriveDoubleChance 算出。
+  Widget _doubleChanceSection() {
+    final dc = _odds?.doubleChance;
+    if (dc == null) return const SizedBox.shrink();
+    Widget tile(String key, String label, double price) {
+      return Expanded(
+        child: _BinaryBetTile(
+          label: label,
+          hint: '',
+          price: price,
+          selected: _selected?.marketType == MarketType.doubleChance &&
+                    _selected?.score == key,
+          myStake: _myBets['${MarketType.doubleChance}::$key'],
+          inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.doubleChance}::$key'),
+          locked: _locked,
+          accent: T.brandDeep,
+          onTap: () => setState(() => _selected = _BetSelection(
+                marketType: MarketType.doubleChance,
+                score: key,
+                price: price,
+                label: '双胜 · $label',
+              )),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8, left: 2),
+            child: Row(
+              children: [
+                Icon(Icons.alt_route, size: 14, color: T.brandDeep),
+                SizedBox(width: 5),
+                Text('双胜(任一选项中即赢)',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+              ],
+            ),
+          ),
+          Row(children: [
+            tile('1X', '主或平', dc.homeOrDraw),
+            const SizedBox(width: 8),
+            tile('X2', '平或客', dc.drawOrAway),
+            const SizedBox(width: 8),
+            tile('12', '主或客', dc.homeOrAway),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  // ── 平退本 Draw No Bet(主 / 客)─────────────────────────────────
+  // 两选项;平局退本金。
+  Widget _drawNoBetSection() {
+    final dnb = _odds?.drawNoBet;
+    if (dnb == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8, left: 2),
+            child: Row(
+              children: [
+                Icon(Icons.compare_arrows, size: 14, color: T.brandDeep),
+                SizedBox(width: 5),
+                Text('平退本(平局退还本金)',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+              ],
+            ),
+          ),
+          Row(children: [
+            Expanded(
+              child: _BinaryBetTile(
+                label: '主胜',
+                hint: '平退本',
+                price: dnb.home,
+                selected: _selected?.marketType == MarketType.drawNoBet &&
+                          _selected?.score == 'home',
+                myStake: _myBets['${MarketType.drawNoBet}::home'],
+                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.drawNoBet}::home'),
+                locked: _locked,
+                accent: T.up,
+                onTap: () => setState(() => _selected = _BetSelection(
+                      marketType: MarketType.drawNoBet,
+                      score: 'home',
+                      price: dnb.home,
+                      label: '平退本 · 主胜',
+                    )),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _BinaryBetTile(
+                label: '客胜',
+                hint: '平退本',
+                price: dnb.away,
+                selected: _selected?.marketType == MarketType.drawNoBet &&
+                          _selected?.score == 'away',
+                myStake: _myBets['${MarketType.drawNoBet}::away'],
+                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.drawNoBet}::away'),
+                locked: _locked,
+                accent: T.down,
+                onTap: () => setState(() => _selected = _BetSelection(
+                      marketType: MarketType.drawNoBet,
+                      score: 'away',
+                      price: dnb.away,
+                      label: '平退本 · 客胜',
+                    )),
+              ),
+            ),
+          ]),
         ],
       ),
     );

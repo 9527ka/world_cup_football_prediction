@@ -80,6 +80,11 @@ class LiveDetail {
   final int minute;
   final int extra;
   final String periodLabel;
+  // 后端写入此记录时的 wall-clock 时间。前端用它做"分钟自走":
+  // 当前显示分钟 = minute + ((now - asOf) seconds / 60),封顶 +2min,
+  // 避免在两次 WS 推送之间画面静止,也不会像旧"从 kickoff 自走"那样
+  // 把 开球延误 / 长中场 / VAR / 入场仪式 错算成比赛分钟。
+  final DateTime? asOf;
   final int homeCorners;
   final int awayCorners;
   final int homeYellow;
@@ -92,6 +97,7 @@ class LiveDetail {
     this.minute = 0,
     this.extra = 0,
     this.periodLabel = '',
+    this.asOf,
     this.homeCorners = 0,
     this.awayCorners = 0,
     this.homeYellow = 0,
@@ -101,18 +107,26 @@ class LiveDetail {
     this.streamUrl = '',
   });
 
-  factory LiveDetail.fromJson(Map<String, dynamic> j) => LiveDetail(
-        minute: (j['minute'] ?? 0) as int,
-        extra: (j['extra'] ?? 0) as int,
-        periodLabel: j['periodLabel'] ?? '',
-        homeCorners: (j['homeCorners'] ?? 0) as int,
-        awayCorners: (j['awayCorners'] ?? 0) as int,
-        homeYellow: (j['homeYellow'] ?? 0) as int,
-        awayYellow: (j['awayYellow'] ?? 0) as int,
-        homeRed: (j['homeRed'] ?? 0) as int,
-        awayRed: (j['awayRed'] ?? 0) as int,
-        streamUrl: j['streamUrl'] ?? '',
-      );
+  factory LiveDetail.fromJson(Map<String, dynamic> j) {
+    DateTime? asOf;
+    final raw = j['asOf'];
+    if (raw is String && raw.isNotEmpty) {
+      asOf = DateTime.tryParse(raw)?.toLocal();
+    }
+    return LiveDetail(
+      minute: (j['minute'] ?? 0) as int,
+      extra: (j['extra'] ?? 0) as int,
+      periodLabel: j['periodLabel'] ?? '',
+      asOf: asOf,
+      homeCorners: (j['homeCorners'] ?? 0) as int,
+      awayCorners: (j['awayCorners'] ?? 0) as int,
+      homeYellow: (j['homeYellow'] ?? 0) as int,
+      awayYellow: (j['awayYellow'] ?? 0) as int,
+      homeRed: (j['homeRed'] ?? 0) as int,
+      awayRed: (j['awayRed'] ?? 0) as int,
+      streamUrl: j['streamUrl'] ?? '',
+    );
+  }
 
   String get minuteDisplay {
     if (periodLabel == 'HT') return '中';
@@ -144,6 +158,8 @@ class MatchInfo {
   final double? mlDraw;
   final double? mlAway;
   final LiveDetail? live;
+  // Admin-managed: true → 列表里整体提前(无论 live / 时间 / 联赛热度)。
+  final bool pinned;
 
   MatchInfo({
     required this.id,
@@ -160,6 +176,7 @@ class MatchInfo {
     this.mlDraw,
     this.mlAway,
     this.live,
+    this.pinned = false,
   });
 
   factory MatchInfo.fromJson(Map<String, dynamic> j) {
@@ -183,6 +200,7 @@ class MatchInfo {
       mlDraw: ml == null ? null : (ml['draw'] as num?)?.toDouble(),
       mlAway: ml == null ? null : (ml['away'] as num?)?.toDouble(),
       live: liveJson == null ? null : LiveDetail.fromJson(liveJson),
+      pinned: j['pinned'] == true,
     );
   }
 
@@ -253,6 +271,34 @@ class BinaryMarket {
       );
 }
 
+/// 双胜(Double Chance) — 1X / X2 / 12 三选项,从 1X2 派生。
+class DoubleChanceMarket {
+  final double homeOrDraw; // 1X
+  final double drawOrAway; // X2
+  final double homeOrAway; // 12
+  DoubleChanceMarket({
+    required this.homeOrDraw,
+    required this.drawOrAway,
+    required this.homeOrAway,
+  });
+  factory DoubleChanceMarket.fromJson(Map<String, dynamic> j) => DoubleChanceMarket(
+        homeOrDraw: (j['homeOrDraw'] ?? 0).toDouble(),
+        drawOrAway: (j['drawOrAway'] ?? 0).toDouble(),
+        homeOrAway: (j['homeOrAway'] ?? 0).toDouble(),
+      );
+}
+
+/// 平退本(Draw No Bet) — 主胜或客胜,平局退本金。
+class DrawNoBetMarket {
+  final double home;
+  final double away;
+  DrawNoBetMarket({required this.home, required this.away});
+  factory DrawNoBetMarket.fromJson(Map<String, dynamic> j) => DrawNoBetMarket(
+        home: (j['home'] ?? 0).toDouble(),
+        away: (j['away'] ?? 0).toDouble(),
+      );
+}
+
 /// 让球盘(Asian Handicap) — 单线半数,主队让球数 line(负=主让,正=主受让)
 class HandicapMarket {
   final double line;
@@ -272,8 +318,11 @@ class OddsSnapshot {
   final DateTime updatedAt;
   final Outcome? moneyLine;
   final List<ScoreOption> correctScore;
-  final OverUnderLine? overUnder;
+  final OverUnderLine? overUnder; // legacy line=2.5,继续读以兼容老前端代码
+  final List<OverUnderLine> overUnders; // 多线 O/U(1.5/2.5/3.5)
   final BinaryMarket? btts;
+  final DoubleChanceMarket? doubleChance;
+  final DrawNoBetMarket? drawNoBet;
   final HandicapMarket? handicap;
   final Map<String, String> change;
   final bool isLive;
@@ -286,7 +335,10 @@ class OddsSnapshot {
     required this.moneyLine,
     required this.correctScore,
     required this.overUnder,
+    this.overUnders = const [],
     required this.btts,
+    this.doubleChance,
+    this.drawNoBet,
     required this.handicap,
     required this.change,
     this.isLive = false,
@@ -321,9 +373,19 @@ class OddsSnapshot {
       overUnder: j['overUnder'] == null
           ? null
           : OverUnderLine.fromJson(j['overUnder'] as Map<String, dynamic>),
+      overUnders: ((j['overUnders'] ?? []) as List)
+          .cast<Map<String, dynamic>>()
+          .map(OverUnderLine.fromJson)
+          .toList(),
       btts: j['btts'] == null
           ? null
           : BinaryMarket.fromJson(j['btts'] as Map<String, dynamic>),
+      doubleChance: j['doubleChance'] == null
+          ? null
+          : DoubleChanceMarket.fromJson(j['doubleChance'] as Map<String, dynamic>),
+      drawNoBet: j['drawNoBet'] == null
+          ? null
+          : DrawNoBetMarket.fromJson(j['drawNoBet'] as Map<String, dynamic>),
       handicap: j['handicap'] == null
           ? null
           : HandicapMarket.fromJson(j['handicap'] as Map<String, dynamic>),
@@ -341,6 +403,8 @@ class MarketType {
   static const btts = 'btts';
   static const matchWinner = 'match_winner';
   static const asianHandicap = 'asian_handicap';
+  static const doubleChance = 'double_chance';
+  static const drawNoBet = 'draw_no_bet';
 }
 
 /// 单条赔率历史采样点。
@@ -862,7 +926,13 @@ class MyRank {
 /// Home / global UI config the operator can edit in /admin/settings.
 class HomeConfig {
   final double weeklyPool;
-  HomeConfig({required this.weeklyPool});
-  factory HomeConfig.fromJson(Map<String, dynamic> j) =>
-      HomeConfig(weeklyPool: (j['weeklyPool'] ?? 0).toDouble());
+  final String customerService; // Telegram username, without leading '@'
+  HomeConfig({required this.weeklyPool, required this.customerService});
+  factory HomeConfig.fromJson(Map<String, dynamic> j) => HomeConfig(
+        weeklyPool: (j['weeklyPool'] ?? 0).toDouble(),
+        customerService:
+            (j['customerService'] as String?)?.trim().isNotEmpty == true
+                ? (j['customerService'] as String).trim()
+                : 'go_home_007',
+      );
 }

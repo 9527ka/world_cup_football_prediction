@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -7,6 +9,13 @@ import '../services/bet_slip.dart';
 import '../services/i18n.dart';
 import '../theme/tokens.dart';
 import '../utils/team_names.dart';
+
+/// 16-byte hex 幂等 key —— 同一逻辑投注意图跨重试复用。
+String _genIdempKey() {
+  final r = Random.secure();
+  final bytes = List<int>.generate(16, (_) => r.nextInt(256));
+  return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
 
 /// 底部弹出的投注单 — 单/串关切换、列出 selections、提交。
 /// 调用方式: BetSlipSheet.show(context, state).
@@ -34,6 +43,10 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
   String? _ok;
   bool _refreshing = false;
   bool _priceDrifted = false;
+
+  /// 串关下单的幂等 key —— 同一次"投注意图"跨多次 retry 复用,成功后清空。
+  /// 弱网用户点投注 → 等待 → 超时 → 再点 → 同 key 命中后端 cache,不会重复扣钱。
+  String? _parlayIdempotencyKey;
 
   /// 当前钱包余额 — 提交前预检用。null 表示还没加载到。
   double? _balance;
@@ -81,9 +94,20 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
               }
               break;
             case MarketType.overUnder25:
-              if (odds.overUnder != null) {
-                if (s.score == 'over') newPrice = odds.overUnder!.over;
-                if (s.score == 'under') newPrice = odds.overUnder!.under;
+              // score 可能是 'over'/'under' (line=2.5) 或 'over@1.5'/'under@3.5'。
+              // 多线时需要从 odds.overUnders 找 line 对应的那条;legacy 单线
+              // 时退到 odds.overUnder(也就是 line=2.5)。
+              final at = s.score.lastIndexOf('@');
+              final side = at > 0 ? s.score.substring(0, at) : s.score;
+              final line = at > 0 ? double.tryParse(s.score.substring(at + 1)) ?? 2.5 : 2.5;
+              OverUnderLine? ouLine;
+              for (final ou in odds.overUnders) {
+                if ((ou.line - line).abs() < 0.01) { ouLine = ou; break; }
+              }
+              ouLine ??= (line == 2.5 ? odds.overUnder : null);
+              if (ouLine != null) {
+                if (side == 'over') newPrice = ouLine.over;
+                if (side == 'under') newPrice = ouLine.under;
               }
               break;
             case MarketType.btts:
@@ -97,6 +121,19 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
                 if (s.score == 'home') newPrice = odds.moneyLine!.home;
                 if (s.score == 'draw') newPrice = odds.moneyLine!.draw;
                 if (s.score == 'away') newPrice = odds.moneyLine!.away;
+              }
+              break;
+            case MarketType.doubleChance:
+              if (odds.doubleChance != null) {
+                if (s.score == '1X') newPrice = odds.doubleChance!.homeOrDraw;
+                if (s.score == 'X2') newPrice = odds.doubleChance!.drawOrAway;
+                if (s.score == '12') newPrice = odds.doubleChance!.homeOrAway;
+              }
+              break;
+            case MarketType.drawNoBet:
+              if (odds.drawNoBet != null) {
+                if (s.score == 'home') newPrice = odds.drawNoBet!.home;
+                if (s.score == 'away') newPrice = odds.drawNoBet!.away;
               }
               break;
             case MarketType.asianHandicap:
@@ -178,10 +215,14 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
                   'score': s.score,
                 })
             .toList();
+        // 首次进入(或上次成功后)→ 生成新 key;失败重试时复用同一 key。
+        _parlayIdempotencyKey ??= _genIdempKey();
         final p = await widget.state.api.submitParlay(
           stake: slip.parlayStake,
           legs: legs,
+          idempotencyKey: _parlayIdempotencyKey,
         );
+        _parlayIdempotencyKey = null; // 成功后丢弃,下次是新意图
         slip.clear();
         setState(() => _ok = tr('slip.ok_parlay')
             .replaceAll('{id}', '${p.id}')
