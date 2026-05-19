@@ -1,5 +1,6 @@
 import '../services/i18n.dart';
 import '../services/team_overrides.dart';
+import 'team_names_i18n.g.dart' as gen;
 
 /// 队名本地化 — 仅 zh 提供翻译,其他语言保留原英文(足球语境英文通用)。
 ///
@@ -1300,15 +1301,48 @@ const Map<String, String> _zhLeague = {
   'Argentina Liga Profesional': '阿甲',
 };
 
-/// Localize a team name. Falls back to the original English when no mapping
-/// exists or the active locale isn't zh.
+// ─── Generated 14-language maps ──────────────────────────────────────────
+// Source of truth is team_names_i18n.g.dart, produced by
+// scripts/translate_teams.py from _zh / _zhLeague keys. Rerun the script
+// after editing those maps.
+const Map<String, Map<String, String>> _teamI18n = {
+  'ru': gen.teamI18n_ru, 'es': gen.teamI18n_es,
+  'ar': gen.teamI18n_ar, 'fa': gen.teamI18n_fa,
+  'hi': gen.teamI18n_hi, 'id': gen.teamI18n_id,
+  'ja': gen.teamI18n_ja, 'ko': gen.teamI18n_ko,
+  'pt': gen.teamI18n_pt, 'tr': gen.teamI18n_tr,
+  'vi': gen.teamI18n_vi, 'fr': gen.teamI18n_fr,
+  'de': gen.teamI18n_de, 'it': gen.teamI18n_it,
+};
+const Map<String, Map<String, String>> _leagueI18n = {
+  'ru': gen.leagueI18n_ru, 'es': gen.leagueI18n_es,
+  'ar': gen.leagueI18n_ar, 'fa': gen.leagueI18n_fa,
+  'hi': gen.leagueI18n_hi, 'id': gen.leagueI18n_id,
+  'ja': gen.leagueI18n_ja, 'ko': gen.leagueI18n_ko,
+  'pt': gen.leagueI18n_pt, 'tr': gen.leagueI18n_tr,
+  'vi': gen.leagueI18n_vi, 'fr': gen.leagueI18n_fr,
+  'de': gen.leagueI18n_de, 'it': gen.leagueI18n_it,
+};
+
+/// Localize a team name to the current locale. Resolution order:
+///   1. admin override (zh / en columns only — runtime-editable)
+///   2. hardcoded map for that locale
+///   3. fallback to English original (admin en-override > raw upstream)
 String localizedTeam(String original) {
   if (original.isEmpty) return original;
-  // Admin-edited override wins over hardcoded map for both locales.
-  if (I18n.instance.locale == 'zh') {
+  final loc = I18n.instance.locale;
+  if (loc == 'zh') {
     return TeamOverrides.instance.nameZh(original) ??
         _zh[original] ??
         original;
+  }
+  if (loc == 'en') {
+    return TeamOverrides.instance.nameEn(original) ?? original;
+  }
+  final m = _teamI18n[loc];
+  if (m != null) {
+    final v = m[original];
+    if (v != null && v.isNotEmpty) return v;
   }
   return TeamOverrides.instance.nameEn(original) ?? original;
 }
@@ -1334,11 +1368,17 @@ String resolveTeamSearchQuery(String input) {
   return trimmed;
 }
 
-/// Localize a league name. Same fallback behavior as [localizedTeam].
+/// Localize a league name. Same fallback behavior as [localizedTeam] but
+/// without admin overrides (league table has no per-locale columns).
 String localizedLeague(String original) {
   if (original.isEmpty) return original;
-  if (I18n.instance.locale == 'zh') {
-    return _zhLeague[original] ?? original;
+  final loc = I18n.instance.locale;
+  if (loc == 'zh') return _zhLeague[original] ?? original;
+  if (loc == 'en') return original;
+  final m = _leagueI18n[loc];
+  if (m != null) {
+    final v = m[original];
+    if (v != null && v.isNotEmpty) return v;
   }
   return original;
 }

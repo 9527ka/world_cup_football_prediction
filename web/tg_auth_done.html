@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Telegram 登录回调</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #0a1929; color: #cfe6ff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    display: flex; align-items: center; justify-content: center; flex-direction: column; }
+  .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: #2AABEE; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  p { margin-top: 16px; font-size: 14px; opacity: 0.85; padding: 0 24px; text-align: center; }
+  a { color: #2AABEE; }
+</style>
+</head>
+<body>
+  <div class="spinner" id="sp"></div>
+  <p id="msg">登录中,请稍候…</p>
+  <script>
+    // Telegram OAuth 在 popup 模式下完成授权,会把浏览器整体导航到 return_to,URL 上
+    // 带 fragment(`#tgAuthResult=<urlsafe-b64-json>`)或 query string。
+    //
+    // 兼容 3 种编码:
+    //   1. #tgAuthResult=<urlsafe-b64-json>   (widget 标准)
+    //   2. #id=&first_name=&...&hash=         (老 widget)
+    //   3. ?id=&first_name=&...&hash=         (query string 形式)
+    function parseAuth() {
+      var raw = (location.hash || '').replace(/^#/, '');
+      var qs  = (location.search || '').replace(/^\?/, '');
+      var m = /(?:^|&)tgAuthResult=([^&]+)/.exec(raw) || /(?:^|&)tgAuthResult=([^&]+)/.exec(qs);
+      if (m) {
+        try {
+          var b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          return JSON.parse(decodeURIComponent(escape(atob(b64))));
+        } catch (e) { /* fall through */ }
+      }
+      var src = raw || qs;
+      if (!src) return null;
+      var obj = {};
+      src.split('&').forEach(function (kv) {
+        var i = kv.indexOf('=');
+        if (i < 0) return;
+        var k = decodeURIComponent(kv.slice(0, i));
+        var v = decodeURIComponent(kv.slice(i + 1));
+        obj[k] = v;
+      });
+      return obj.hash ? obj : null;
+    }
+
+    function fail(text) {
+      document.getElementById('sp').style.display = 'none';
+      document.getElementById('msg').innerHTML = text +
+        '<br><br><a href="/">返回首页</a>';
+    }
+
+    var payload = parseAuth();
+    if (!payload || !payload.hash) {
+      fail('未收到 Telegram 授权数据。请重新尝试登录。');
+    } else {
+      // 调后端验签 → 拿 JWT → 跳回主页带 token,主 app 取出后 set,清掉 URL。
+      // 用 query 参数(tg_token=)而非 fragment — 让 Flutter 启动逻辑能从
+      // Uri.base.queryParameters 直接拿到。
+      fetch('/api/auth/telegram-web', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'same-origin'
+      })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+        return r.json();
+      })
+      .then(function (body) {
+        if (!body.token) throw new Error('no token returned');
+        // 回主页;带 tg_token 参数 + 上次 return_url(sessionStorage 存的)
+        var next = '/';
+        try {
+          var stored = sessionStorage.getItem('tg.return_url');
+          if (stored && stored.indexOf(location.origin) === 0) {
+            // 去掉旧 query/fragment 防累加
+            next = stored.replace(/[?#].*$/, '');
+          }
+        } catch (e) {}
+        sessionStorage.removeItem('tg.return_url');
+        var sep = next.indexOf('?') >= 0 ? '&' : '?';
+        location.replace(next + sep + 'tg_token=' + encodeURIComponent(body.token));
+      })
+      .catch(function (e) {
+        fail('登录失败:' + (e && e.message ? e.message : '未知错误'));
+      });
+    }
+  </script>
+</body>
+</html>

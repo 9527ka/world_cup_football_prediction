@@ -9,6 +9,7 @@ import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/chain_icon.dart';
 import '../widgets/light_card.dart';
+import '../widgets/login_wall.dart';
 
 /// 08 · 充值 — 链选 + 地址 + 凭证 + 金额 + 提交。
 class DepositPage extends StatefulWidget {
@@ -156,6 +157,29 @@ class _DepositPageState extends State<DepositPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 浏览器未登录:用引导卡替代表单。Mini App 内 initialize() 已登录,不进这里。
+    if (!widget.state.isAuthenticated) {
+      return Scaffold(
+        backgroundColor: T.bgPage,
+        body: Container(
+          decoration: const BoxDecoration(gradient: T.pageGradient),
+          child: SafeArea(
+            child: Column(
+              children: [
+                _topBar(),
+                Expanded(
+                  child: LoginRequiredCard(
+                    state: widget.state,
+                    label: tr('dep.title'),
+                    onLoggedIn: _loadWallet,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: T.bgPage,
       body: Container(

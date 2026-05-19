@@ -27,6 +27,10 @@ class AppState extends ChangeNotifier {
   bool get isAuthenticated => api.token != null;
   Map<String, dynamic>? get user => api.user;
 
+  /// 浏览器登录成功后调一下,让监听 AppState 的 widget 重建(钱包 / 头像
+  /// 出现等)。包外不能直接调 notifyListeners(protected)。
+  void notifyAuthChanged() => notifyListeners();
+
   Future<void> initialize() async {
     await api.loadFromStorage();
     api.onTokenExpired = _refreshToken;
@@ -63,8 +67,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> tryTelegramLogin() async {
     final initData = Telegram.initData();
+    // 浏览器环境(非 Mini App):initData 空,**不尝试**调后端;让用户通过
+    // LoginWall(/widgets/login_wall.dart)显式选 Telegram 登录。不报错防止
+    // 首屏出现"登录失败"误导。Mini App 内永远有 initData,正常走登录链路。
     if (initData.isEmpty) {
-      // dev mode — backend may accept empty initData if SKIP_TELEGRAM_AUTH=true
+      notifyListeners();
+      return;
     }
     try {
       await api.loginTelegram(initData, startParam: Telegram.startParam());

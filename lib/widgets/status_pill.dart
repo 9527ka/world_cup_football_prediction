@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/i18n.dart';
 import '../theme/tokens.dart';
 
 enum BetStatus { pending, live, won, lost, voided, cashedOut }
@@ -32,7 +33,7 @@ class StatusPill extends StatelessWidget {
               decoration: BoxDecoration(color: cfg.dot, shape: BoxShape.circle),
             ),
           Text(
-            label ?? cfg.label,
+            label ?? tr(cfg.labelKey),
             style: TextStyle(
               color: cfg.fg,
               fontSize: 10,
@@ -102,27 +103,27 @@ class _LivePulseDotState extends State<_LivePulseDot>
 }
 
 class _PillCfg {
-  final String label;
+  final String labelKey;
   final Color bg;
   final Color fg;
   final Color dot;
-  const _PillCfg(this.label, this.bg, this.fg, this.dot);
+  const _PillCfg(this.labelKey, this.bg, this.fg, this.dot);
 }
 
 _PillCfg _cfg(BetStatus s) {
   switch (s) {
     case BetStatus.pending:
-      return const _PillCfg('待开赛', Color(0x24F5B544), Color(0xFFC7861E), T.warn);
+      return const _PillCfg('pill.pending', Color(0x24F5B544), Color(0xFFC7861E), T.warn);
     case BetStatus.live:
-      return const _PillCfg('进行中', Color(0x1AE03E2D), T.down, T.down);
+      return const _PillCfg('pill.live', Color(0x1AE03E2D), T.down, T.down);
     case BetStatus.won:
-      return const _PillCfg('已中奖', Color(0x242BD475), T.upDark, T.up);
+      return const _PillCfg('pill.won', Color(0x242BD475), T.upDark, T.up);
     case BetStatus.lost:
-      return const _PillCfg('未中奖', Color(0xFFEEF2F7), T.inkLo, T.inkLo);
+      return const _PillCfg('pill.lost', Color(0xFFEEF2F7), T.inkLo, T.inkLo);
     case BetStatus.voided:
-      return const _PillCfg('已退还', Color(0x248C9CB1), T.inkMd, T.inkLo);
+      return const _PillCfg('pill.voided', Color(0x248C9CB1), T.inkMd, T.inkLo);
     case BetStatus.cashedOut:
-      return const _PillCfg('已提结', Color(0x242CD7FD), T.brandDeep, T.brand);
+      return const _PillCfg('pill.cashed_out', Color(0x242CD7FD), T.brandDeep, T.brand);
   }
 }
 

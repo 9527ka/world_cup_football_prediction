@@ -6,6 +6,7 @@ import '../services/app_state.dart';
 import '../services/i18n.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
+import '../widgets/login_wall.dart';
 
 /// 09 · 提现 — 链选 + 地址 + 金额 + 摘要 + 提交。
 class WithdrawPage extends StatefulWidget {
@@ -101,6 +102,29 @@ class _WithdrawPageState extends State<WithdrawPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 浏览器未登录:用引导卡替代表单。Mini App 内已登录,不会进。
+    if (!widget.state.isAuthenticated) {
+      return Scaffold(
+        backgroundColor: T.bgPage,
+        body: Container(
+          decoration: const BoxDecoration(gradient: T.pageGradient),
+          child: SafeArea(
+            child: Column(
+              children: [
+                _topBar(),
+                Expanded(
+                  child: LoginRequiredCard(
+                    state: widget.state,
+                    label: tr('wd.title'),
+                    onLoggedIn: _loadWallet,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0;
     final arrive = (amt - _fee).clamp(0, double.infinity);
     return Scaffold(
@@ -231,13 +255,6 @@ class _WithdrawPageState extends State<WithdrawPage> {
                                 fontSize: 15, fontWeight: FontWeight.w800)),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(tr('wd.review_note'),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: T.inkLo,
-                            fontWeight: FontWeight.w600)),
                   ],
                 ),
               ),

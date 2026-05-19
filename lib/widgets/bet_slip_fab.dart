@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../pages/bet_slip_sheet.dart';
 import '../services/app_state.dart';
+import '../services/i18n.dart';
 import '../theme/tokens.dart';
 
 /// 跨所有页面常驻的悬浮购物车按钮。投注单空时隐藏。
@@ -40,7 +41,7 @@ class BetSlipFab extends StatelessWidget {
                 children: [
                   const Icon(Icons.receipt_long, size: 18, color: Colors.white),
                   const SizedBox(width: 8),
-                  Text('投注单 $n',
+                  Text(tr('slip.fab').replaceAll('{n}', '$n'),
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 14,

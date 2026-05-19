@@ -4,10 +4,12 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/api_client.dart';
 import '../services/app_state.dart';
+import '../services/auth_gate.dart';
 import '../services/i18n.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
+import '../widgets/login_wall.dart';
 import 'deposit_page.dart';
 import 'feature_pages.dart';
 import 'ledger_page.dart';
@@ -56,6 +58,22 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     final user = widget.state.user;
+    // 浏览器未登录:把页面替换为 Telegram 登录引导卡。
+    // Mini App 内 initialize() 已自动登录,正常走 FutureBuilder 流程。
+    if (!widget.state.isAuthenticated) {
+      return ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          const SizedBox(height: 12),
+          _profileHeader(null, null),
+          LoginRequiredCard(
+            state: widget.state,
+            label: tr('nav.profile'),
+            onLoggedIn: () => setState(() => _future = _load()),
+          ),
+        ],
+      );
+    }
     return RefreshIndicator(
       color: T.brandDeep,
       onRefresh: () async {
@@ -80,26 +98,12 @@ class _ProfilePageState extends State<ProfilePage> {
               _statsRow(s),
               _menuGroupBets(s),
               _menuGroupSettings(),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                child: TextButton(
-                  onPressed: () async {
-                    await widget.state.api.logout();
-                    if (mounted) setState(() => _future = _load());
-                  },
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size.fromHeight(44),
-                    backgroundColor: Colors.white,
-                    foregroundColor: T.down,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      side: const BorderSide(color: T.border),
-                    ),
-                  ),
-                  child: Text(tr('profile.logout'),
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                ),
-              ),
+              // 邮箱账号才有密码可改;纯 TG 账号 user.email 为空,不显示。
+              if ((user?['email'] as String?)?.isNotEmpty ?? false)
+                _changePasswordButton(),
+              // Mini App 内不显示退出按钮 —— Telegram 内退出后 Mini App
+              // 关闭重开会自动重新授权,按钮反而让用户困惑;只在浏览器版显示。
+              if (!isInMiniApp()) _logoutButton(),
             ],
           );
         },
@@ -116,7 +120,8 @@ class _ProfilePageState extends State<ProfilePage> {
                 ? '@${user['username']}'
                 : 'User#${user['id']}';
     final initial = username.isEmpty ? '?' : username.characters.first.toUpperCase();
-    final tid = user == null ? '-' : '${user['telegramId']}';
+    // 统一展示系统 user.id(对 Telegram + 邮箱账号都有效;telegramId 在邮箱账号上为 0,显示"0"不合理)。
+    final tid = user == null ? '-' : '${user['id']}';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
@@ -487,6 +492,199 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       ),
     );
+  }
+
+  /// 修改密码按钮(仅邮箱账号显示):弹对话框 → 旧/新/确认 三字段 → POST /api/me/password。
+  /// 成功 toast + 关闭;失败按后端错码显示对应文案。token 不变(后端不要求重登)。
+  Widget _changePasswordButton() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: SizedBox(
+        width: double.infinity,
+        height: 44,
+        child: OutlinedButton.icon(
+          onPressed: _openChangePasswordDialog,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: T.ink,
+            side: const BorderSide(color: T.border),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          icon: const Icon(Icons.lock_outline_rounded, size: 18),
+          label: Text(tr('profile.change_password'),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openChangePasswordDialog() async {
+    final oldCtrl = TextEditingController();
+    final newCtrl = TextEditingController();
+    final confirmCtrl = TextEditingController();
+    String? hint;
+    bool busy = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setLocal) {
+        Future<void> submit() async {
+          final oldP = oldCtrl.text;
+          final newP = newCtrl.text;
+          final confirm = confirmCtrl.text;
+          if (oldP.isEmpty) {
+            setLocal(() => hint = tr('profile.cp.err_old_required'));
+            return;
+          }
+          if (newP.length < 6 || newP.length > 72) {
+            setLocal(() => hint = tr('profile.cp.err_new_length'));
+            return;
+          }
+          if (newP != confirm) {
+            setLocal(() => hint = tr('profile.cp.err_mismatch'));
+            return;
+          }
+          setLocal(() {
+            busy = true;
+            hint = null;
+          });
+          try {
+            await widget.state.api.changePassword(oldPassword: oldP, newPassword: newP);
+            if (!ctx.mounted) return;
+            Navigator.of(ctx).pop();
+            if (mounted) Toast.show(context, tr('profile.cp.done'));
+          } catch (e) {
+            if (!ctx.mounted) return;
+            // ApiException.message 是后端 raw 错码(json `error` 字段),
+            // toString() 会被 _zhError 翻译,不能用来精确匹配。
+            String h = tr('profile.cp.err_unknown');
+            if (e is ApiException) {
+              switch (e.message) {
+                case 'invalid_credentials':
+                  h = tr('profile.cp.err_wrong_old');
+                case 'no_password_set':
+                  h = tr('profile.cp.err_no_password');
+                case 'invalid_password':
+                  h = tr('profile.cp.err_new_length');
+              }
+            }
+            setLocal(() {
+              busy = false;
+              hint = h;
+            });
+          }
+        }
+
+        Widget input(TextEditingController c, String label) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: TextField(
+                controller: c,
+                obscureText: true,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  hintText: label,
+                  hintStyle: const TextStyle(fontSize: 13, color: T.inkLo),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            );
+
+        return AlertDialog(
+          title: Text(tr('profile.change_password')),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                input(oldCtrl, tr('profile.cp.old_placeholder')),
+                input(newCtrl, tr('profile.cp.new_placeholder')),
+                input(confirmCtrl, tr('profile.cp.confirm_placeholder')),
+                if (hint != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(hint!,
+                        style: const TextStyle(fontSize: 12, color: T.down)),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.of(ctx).pop(),
+              child: Text(tr('common.cancel')),
+            ),
+            TextButton(
+              onPressed: busy ? null : submit,
+              child: busy
+                  ? const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(tr('profile.cp.submit')),
+            ),
+          ],
+        );
+      }),
+    );
+    oldCtrl.dispose();
+    newCtrl.dispose();
+    confirmCtrl.dispose();
+  }
+
+  /// 退出登录按钮:清 token + user,通知 AppState,profile 会自动重渲染为
+  /// 登录引导卡(浏览器)或空白态(Mini App,用户得重开 bot 触发自动登录)。
+  Widget _logoutButton() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: SizedBox(
+        width: double.infinity,
+        height: 44,
+        child: OutlinedButton.icon(
+          onPressed: _confirmLogout,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: T.down,
+            side: BorderSide(color: T.down.withValues(alpha: 0.45)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          icon: const Icon(Icons.logout_rounded, size: 18),
+          label: Text(tr('profile.logout'),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmLogout() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(tr('profile.logout_confirm_title')),
+        content: Text(tr('profile.logout_confirm_body')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(tr('common.cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(foregroundColor: T.down),
+            child: Text(tr('profile.logout')),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await widget.state.api.logout();
+    // 断开 WebSocket(token 已失效;新建无 token 连接)
+    widget.state.stream.setToken(null);
+    widget.state.notifyAuthChanged();
+    if (!mounted) return;
+    setState(() {
+      _future = _load();
+    });
+    Toast.show(context, tr('profile.logout_done'));
   }
 
   Widget _menuItem(String label, String note, IconData icon, Color c1, Color c2,

@@ -444,7 +444,6 @@ class _MatchListPageState extends State<MatchListPage>
   Widget _datePicker() {
     final today = DateTime.now();
     final todayDay = DateTime(today.year, today.month, today.day);
-    const weekDays = ['一', '二', '三', '四', '五', '六', '日'];
     final fmt = DateFormat('MM/dd');
 
     return Container(
@@ -466,7 +465,7 @@ class _MatchListPageState extends State<MatchListPage>
           if (isToday) {
             label = tr('matches.today');
           } else {
-            label = '${fmt.format(d)}\n${tr('matches.week')}${weekDays[d.weekday - 1]}';
+            label = '${fmt.format(d)}\n${tr('matches.week')}${tr('week.${d.weekday}')}';
           }
 
           return GestureDetector(
@@ -932,7 +931,7 @@ class _MatchListPageState extends State<MatchListPage>
                   borderRadius: BorderRadius.circular(2),
                 ),
                 child: Text(
-                  '补${ld!.extra}',
+                  tr('live.stoppage_prefix').replaceAll('{n}', '${ld!.extra}'),
                   style: const TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.w800,
@@ -976,8 +975,8 @@ class _MatchListPageState extends State<MatchListPage>
     final ld = m.live;
     if (ld != null) {
       final pl = ld.periodLabel;
-      if (pl == 'HT') return '中';
-      if (pl == 'PEN') return '点';
+      if (pl == 'HT') return tr('live.minute_ht');
+      if (pl == 'PEN') return tr('live.minute_pen');
       if (pl == 'BT') return ld.minuteDisplay; // post-game break
       if (ld.extra > 0) return '${ld.minute}+${ld.extra}\''; // stoppage time
     }
@@ -985,7 +984,7 @@ class _MatchListPageState extends State<MatchListPage>
     final elapsedFromKickoff = DateTime.now().difference(m.date).inMinutes;
     // 兜底:kickoff 已超过 150min(90+HT+ET+PEN+buffer)还在 live → 上游 feed
     // 卡住,后端 sweeper 尚未追上。前端先显示"完",别再骗用户"还在 90'"。
-    if (elapsedFromKickoff > 150) return '完';
+    if (elapsedFromKickoff > 150) return tr('live.minute_ft');
 
     int mins;
     if (upMin == 0) {
@@ -1077,14 +1076,20 @@ class _MatchListPageState extends State<MatchListPage>
     }
     if (m.isLive && ld != null && ld.homeYellow + ld.awayYellow > 0) {
       stats.addAll([
-        _statBadge('黄${ld.homeYellow}-${ld.awayYellow}',
+        _statBadge(
+            tr('live.yellow_count')
+                .replaceAll('{home}', '${ld.homeYellow}')
+                .replaceAll('{away}', '${ld.awayYellow}'),
             const Color(0xFFFFF9C4), const Color(0xFFF57F17)),
         const SizedBox(width: 6),
       ]);
     }
     if (m.isLive && ld != null && ld.homeRed + ld.awayRed > 0) {
       stats.addAll([
-        _statBadge('红${ld.homeRed}-${ld.awayRed}',
+        _statBadge(
+            tr('live.red_count')
+                .replaceAll('{home}', '${ld.homeRed}')
+                .replaceAll('{away}', '${ld.awayRed}'),
             const Color(0xFFFFEBEE), T.down),
         const SizedBox(width: 6),
       ]);
@@ -1105,11 +1110,11 @@ class _MatchListPageState extends State<MatchListPage>
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _miniOdds('主', m.mlHome ?? 0),
+              _miniOdds(tr('mini.home'), m.mlHome ?? 0),
               const SizedBox(width: 8),
-              _miniOdds('平', m.mlDraw ?? 0),
+              _miniOdds(tr('mini.draw'), m.mlDraw ?? 0),
               const SizedBox(width: 8),
-              _miniOdds('客', m.mlAway ?? 0),
+              _miniOdds(tr('mini.away'), m.mlAway ?? 0),
             ],
           ),
       ],

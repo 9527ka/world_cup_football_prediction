@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 
 import '../models/match.dart';
 import '../services/app_state.dart';
+import '../services/auth_gate.dart';
 import '../services/bet_slip.dart';
 import '../services/i18n.dart';
 import '../services/player_names.dart';
@@ -304,13 +305,13 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             BoxShadow(color: Color(0x55FF4040), blurRadius: 6, offset: Offset(0, 2)),
           ],
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.play_arrow, color: Colors.white, size: 12),
-            SizedBox(width: 2),
-            Text('看直播',
-                style: TextStyle(
+            const Icon(Icons.play_arrow, color: Colors.white, size: 12),
+            const SizedBox(width: 2),
+            Text(tr('detail.watch_stream'),
+                style: const TextStyle(
                     color: Colors.white,
                     fontSize: 10,
                     fontWeight: FontWeight.w800)),
@@ -420,6 +421,12 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     final sel = _selected;
     if (sel == null) return;
     if (_placing) return; // double-tap guard
+    // 浏览器未登录:先弹 Telegram 登录,登录成功后再下注。Mini App 内永远是
+    // 已登录,直接 fall through。
+    if (!widget.state.isAuthenticated) {
+      final ok = await requireLogin(context, widget.state);
+      if (!ok || !mounted) return;
+    }
     setState(() {
       _placing = true;
       _placeError = null;
@@ -866,11 +873,11 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   Widget _liveStatsSection() {
     final rows = <_StatRow>[
-      _StatRow('角球', 'corners', _statsHome['corners'] ?? 0, _statsAway['corners'] ?? 0),
-      _StatRow('黄牌', 'yellow', _statsHome['yellow'] ?? 0, _statsAway['yellow'] ?? 0),
-      _StatRow('红牌', 'red', _statsHome['red'] ?? 0, _statsAway['red'] ?? 0),
-      _StatRow('射门', 'shots', _statsHome['shots'] ?? 0, _statsAway['shots'] ?? 0),
-      _StatRow('射正', 'shotsOnTarget', _statsHome['shotsOnTarget'] ?? 0, _statsAway['shotsOnTarget'] ?? 0),
+      _StatRow(tr('stats.corners'), 'corners', _statsHome['corners'] ?? 0, _statsAway['corners'] ?? 0),
+      _StatRow(tr('stats.yellow'), 'yellow', _statsHome['yellow'] ?? 0, _statsAway['yellow'] ?? 0),
+      _StatRow(tr('stats.red'), 'red', _statsHome['red'] ?? 0, _statsAway['red'] ?? 0),
+      _StatRow(tr('stats.shots'), 'shots', _statsHome['shots'] ?? 0, _statsAway['shots'] ?? 0),
+      _StatRow(tr('stats.shots_on_target'), 'shotsOnTarget', _statsHome['shotsOnTarget'] ?? 0, _statsAway['shotsOnTarget'] ?? 0),
     ].where((r) => r.home > 0 || r.away > 0).toList();
     if (rows.isEmpty) return const SizedBox.shrink();
 
@@ -881,8 +888,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('现场技术统计',
-                style: TextStyle(
+            Text(tr('stats.title'),
+                style: const TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w800, color: T.ink)),
             const SizedBox(height: 10),
             for (final r in rows) ...[
@@ -976,13 +983,13 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('比赛事件',
-                style: TextStyle(
+            Text(tr('events.title'),
+                style: const TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w800, color: T.ink)),
             const SizedBox(height: 10),
-            if (goals.isNotEmpty) _eventRow('⚽ 进球', goals, T.up),
-            if (yellows.isNotEmpty) _eventRow('🟨 黄牌', yellows, const Color(0xFFF5B544)),
-            if (reds.isNotEmpty) _eventRow('🟥 红牌', reds, T.down),
+            if (goals.isNotEmpty) _eventRow(tr('events.goals'), goals, T.up),
+            if (yellows.isNotEmpty) _eventRow(tr('events.yellow'), yellows, const Color(0xFFF5B544)),
+            if (reds.isNotEmpty) _eventRow(tr('events.red'), reds, T.down),
           ],
         ),
       ),
@@ -1538,7 +1545,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 marketType: MarketType.doubleChance,
                 score: key,
                 price: price,
-                label: '双胜 · $label',
+                label: '${tr('dc.short')} · $label',
               )),
         ),
       );
@@ -1548,23 +1555,23 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8, left: 2),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8, left: 2),
             child: Row(
               children: [
-                Icon(Icons.alt_route, size: 14, color: T.brandDeep),
-                SizedBox(width: 5),
-                Text('双胜(任一选项中即赢)',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+                const Icon(Icons.alt_route, size: 14, color: T.brandDeep),
+                const SizedBox(width: 5),
+                Text(tr('dc.title'),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
               ],
             ),
           ),
           Row(children: [
-            tile('1X', '主或平', dc.homeOrDraw),
+            tile('1X', tr('dc.1x'), dc.homeOrDraw),
             const SizedBox(width: 8),
-            tile('X2', '平或客', dc.drawOrAway),
+            tile('X2', tr('dc.x2'), dc.drawOrAway),
             const SizedBox(width: 8),
-            tile('12', '主或客', dc.homeOrAway),
+            tile('12', tr('dc.12'), dc.homeOrAway),
           ]),
         ],
       ),
@@ -1581,22 +1588,22 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8, left: 2),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8, left: 2),
             child: Row(
               children: [
-                Icon(Icons.compare_arrows, size: 14, color: T.brandDeep),
-                SizedBox(width: 5),
-                Text('平退本(平局退还本金)',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+                const Icon(Icons.compare_arrows, size: 14, color: T.brandDeep),
+                const SizedBox(width: 5),
+                Text(tr('dnb.title'),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
               ],
             ),
           ),
           Row(children: [
             Expanded(
               child: _BinaryBetTile(
-                label: '主胜',
-                hint: '平退本',
+                label: tr('detail.win_home'),
+                hint: tr('dnb.short'),
                 price: dnb.home,
                 selected: _selected?.marketType == MarketType.drawNoBet &&
                           _selected?.score == 'home',
@@ -1608,15 +1615,15 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                       marketType: MarketType.drawNoBet,
                       score: 'home',
                       price: dnb.home,
-                      label: '平退本 · 主胜',
+                      label: '${tr('dnb.short')} · ${tr('detail.win_home')}',
                     )),
               ),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: _BinaryBetTile(
-                label: '客胜',
-                hint: '平退本',
+                label: tr('detail.win_away'),
+                hint: tr('dnb.short'),
                 price: dnb.away,
                 selected: _selected?.marketType == MarketType.drawNoBet &&
                           _selected?.score == 'away',
@@ -1628,7 +1635,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                       marketType: MarketType.drawNoBet,
                       score: 'away',
                       price: dnb.away,
-                      label: '平退本 · 客胜',
+                      label: '${tr('dnb.short')} · ${tr('detail.win_away')}',
                     )),
               ),
             ),
@@ -2193,13 +2200,18 @@ class _BinaryBetTile extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(label,
-                            style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w800,
-                                color: betted
-                                    ? T.inkLo
-                                    : selected ? Colors.white : T.ink)),
+                        Flexible(
+                          child: Text(label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                  color: betted
+                                      ? T.inkLo
+                                      : selected ? Colors.white : T.ink)),
+                        ),
+                        const SizedBox(width: 6),
                         if (betted)
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

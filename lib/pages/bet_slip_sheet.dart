@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../models/match.dart';
 import '../services/app_state.dart';
+import '../services/auth_gate.dart';
 import '../services/bet_slip.dart';
 import '../services/i18n.dart';
 import '../theme/tokens.dart';
@@ -163,6 +164,11 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
   Future<void> _submit() async {
     final slip = widget.state.betSlip;
     if (slip.isEmpty) return;
+    // 浏览器未登录:先走 Telegram 授权;登录成功后才进真实提交。
+    if (!widget.state.isAuthenticated) {
+      final ok = await requireLogin(context, widget.state);
+      if (!ok || !mounted) return;
+    }
     setState(() {
       _submitting = true;
       _error = null;

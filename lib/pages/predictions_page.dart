@@ -933,15 +933,15 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
         break;
       case 'pushed':
         statusColor = T.gold;
-        statusLabel = '退本';
+        statusLabel = tr('pred.status_push');
         break;
       case 'half_won':
         statusColor = T.up;
-        statusLabel = '赢半 (退一半 + 赢一半)';
+        statusLabel = tr('pred.status_half_won');
         break;
       case 'half_lost':
         statusColor = T.down;
-        statusLabel = '输半 (退一半)';
+        statusLabel = tr('pred.status_half_lost');
         break;
       default:
         statusColor = T.gold;
@@ -1201,15 +1201,15 @@ String _selectionLabel(String marketType, String score) {
     case MarketType.doubleChance:
       // score: "1X" | "X2" | "12"
       switch (score) {
-        case '1X': return '双胜 · 主或平';
-        case 'X2': return '双胜 · 平或客';
-        case '12': return '双胜 · 主或客';
+        case '1X': return '${tr('dc.short')} · ${tr('dc.1x')}';
+        case 'X2': return '${tr('dc.short')} · ${tr('dc.x2')}';
+        case '12': return '${tr('dc.short')} · ${tr('dc.12')}';
       }
-      return '双胜 · $score';
+      return '${tr('dc.short')} · $score';
     case MarketType.drawNoBet:
-      if (score == 'home') return '平退本 · 主胜';
-      if (score == 'away') return '平退本 · 客胜';
-      return '平退本 · $score';
+      if (score == 'home') return '${tr('dnb.short')} · ${tr('detail.win_home')}';
+      if (score == 'away') return '${tr('dnb.short')} · ${tr('detail.win_away')}';
+      return '${tr('dnb.short')} · $score';
     case MarketType.asianHandicap:
       // score 形如 "home@-0.5" / "away@+1.5"
       final at = score.lastIndexOf('@');

@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/match.dart';
+import 'i18n.dart';
 
 /// 生成一个 32 字符 hex 的幂等 key(等同 UUID v4 但去掉分隔符)。
 /// 安全性来自 Random.secure(),冲突概率 1/2^128 ≈ 0。后端只要 16~128 字符。
@@ -27,6 +29,25 @@ class ApiClient {
 
   String? get token => _token;
   Map<String, dynamic>? get user => _user;
+
+  /// 外部(浏览器 OAuth 回跳后)直接注入 token。必须 await 完成 — 否则后续
+  /// loadFromStorage() 会用 SharedPreferences 旧值覆盖 in-memory token。
+  Future<void> setTokenFromExternal(String token) async {
+    _token = token;
+    await _persist();
+  }
+
+  Future<void> setUserFromExternal(Map<String, dynamic> user) async {
+    _user = user;
+    await _persist();
+  }
+
+  /// 当前登录用户信息(走 /api/me)。需要已带 token,否则 401。
+  Future<Map<String, dynamic>> getMe() async {
+    final r = await _authGet(_uri('/api/me'));
+    _check(r);
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
 
   Future<void> loadFromStorage() async {
     final p = await SharedPreferences.getInstance();
@@ -123,6 +144,97 @@ class ApiClient {
     _user = body['user'] as Map<String, dynamic>?;
     await _persist();
     return body;
+  }
+
+  /// 浏览器登录入口:Telegram Login Widget 的 callback 把整个 user 对象转发到
+  /// 后端验签。`payload` 字段对应 widget 的 user 参数(`id`/`first_name`/
+  /// `last_name`/`username`/`photo_url`/`auth_date`/`hash`)。`startParam` 可选,
+  /// 跟 Mini App 路径一样用来绑定邀请人。
+  Future<Map<String, dynamic>> loginTelegramWeb(Map<String, dynamic> payload, {String startParam = ''}) async {
+    final body = Map<String, dynamic>.from(payload);
+    if (startParam.isNotEmpty) body['startParam'] = startParam;
+    final r = await http.post(
+      _uri('/api/auth/telegram-web'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    _check(r);
+    final out = jsonDecode(r.body) as Map<String, dynamic>;
+    _token = out['token'] as String?;
+    _user = out['user'] as Map<String, dynamic>?;
+    await _persist();
+    return out;
+  }
+
+  /// 邮箱注册:email + password + displayName,不发验证邮件。成功后跟 TG 登录走同一套
+  /// token / user 写入流程。后端 409 (email_taken) / 400 (invalid_*) 都丢给上层显示。
+  Future<Map<String, dynamic>> registerEmail({
+    required String email,
+    required String password,
+    required String displayName,
+  }) async {
+    final r = await http.post(
+      _uri('/api/auth/register'),
+      headers: _headers(),
+      body: jsonEncode({
+        'email': email,
+        'password': password,
+        'displayName': displayName,
+      }),
+    );
+    _check(r);
+    final body = jsonDecode(r.body) as Map<String, dynamic>;
+    _token = body['token'] as String?;
+    _user = body['user'] as Map<String, dynamic>?;
+    await _persist();
+    return body;
+  }
+
+  /// 修改自己密码:旧密码必须对。后端 401 = 旧密码错,403 = 没设过密码(纯 TG 账号),
+  /// 400 = 新密码格式不符。错误丢给上层 toast 展示。
+  Future<void> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    final r = await _authPost(
+      _uri('/api/me/password'),
+      body: jsonEncode({'oldPassword': oldPassword, 'newPassword': newPassword}),
+    );
+    _check(r);
+  }
+
+  /// 邮箱登录:错误统一回 "invalid_credentials" (不暴露是邮箱不存在还是密码错)。
+  Future<Map<String, dynamic>> loginEmail({
+    required String email,
+    required String password,
+  }) async {
+    final r = await http.post(
+      _uri('/api/auth/login'),
+      headers: _headers(),
+      body: jsonEncode({'email': email, 'password': password}),
+    );
+    _check(r);
+    final body = jsonDecode(r.body) as Map<String, dynamic>;
+    _token = body['token'] as String?;
+    _user = body['user'] as Map<String, dynamic>?;
+    await _persist();
+    return body;
+  }
+
+  /// 拿 bot 元信息(username + 数字 id)。
+  /// - botUsername:嵌 Telegram Login Widget script 时用。
+  /// - botId:直接打开 oauth.telegram.org/auth?bot_id=... 时用(popup 流程)。
+  ///
+  /// 后端通过 env `TELEGRAM_BOT_USERNAME` 提供 username;botId 从 token 前缀解析。
+  /// 失败 / 空值时调用方应禁用浏览器登录按钮 + 提示 BotFather 域名未配置。
+  Future<AuthBotConfig> authConfig() async {
+    final r = await http.get(_uri('/api/auth/config'), headers: _headers());
+    _check(r);
+    final body = jsonDecode(r.body) as Map<String, dynamic>;
+    return AuthBotConfig(
+      botUsername: (body['botUsername'] as String?) ?? '',
+      botId: (body['botId'] as num?)?.toInt() ?? 0,
+    );
   }
 
   Future<void> logout() async {
@@ -312,10 +424,12 @@ class ApiClient {
   Future<List<LeaderboardEntry>> leaderboard({
     int limit = 50,
     String period = 'all',
+    String locale = '',
   }) async {
-    final r = await http.get(
-      _uri('/api/leaderboard', {'limit': '$limit', 'period': period}),
-    );
+    // locale 影响虚拟用户名池(zh=中文池,其它=英文池)+ 参与 seed,所以一定要透传。
+    final q = {'limit': '$limit', 'period': period};
+    if (locale.isNotEmpty) q['locale'] = locale;
+    final r = await http.get(_uri('/api/leaderboard', q));
     _check(r);
     final list = jsonDecode(r.body) as List;
     return list.cast<Map<String, dynamic>>().map(LeaderboardEntry.fromJson).toList();
@@ -536,55 +650,98 @@ class ApiClient {
   }
 }
 
-/// 把后端英文 error key 翻译成给用户看的中文。匹配优先级:
+/// 把后端英文 error key 翻译成给用户看的当前语言文案。匹配优先级:
 /// 1. 完全匹配  2. 前缀匹配(用于 "match X not bettable" 这种带变量的)。
+/// 翻译表在 i18n.dart 的 err.* key 下,locale 切换自动跟随。
 String _zhError(String raw) {
-  // exact
   const exact = <String, String>{
-    'insufficient balance': '余额不足',
-    'matchId and score are required': '请先选择比赛和投注项',
-    'matchId and score are required for every leg': '每个选项都需要比赛和投注项',
-    'unknown marketType': '不支持的玩法',
-    'unknown marketType in leg': '串关中含有不支持的玩法',
-    'same match cannot appear twice in a parlay': '同一场比赛不能在串关中出现两次',
-    'match not found': '比赛不存在或已下架',
-    'match already started or settled': '比赛已开始或已结束,无法下注',
-    'odds not available': '赔率暂时不可用,请稍后重试',
-    'selection not offered': '该选项已下架,请重新选择',
-    'score not offered': '该比分已下架,请重新选择',
-    'invalid body': '请求格式错误',
-    'bad action': '操作类型不合法',
-    'bad id': '参数错误',
-    'parlay needs at least 2 legs': '串关至少需要 2 关',
-    'parlay limited to 8 legs': '串关最多 8 关',
-    'missing bearer token': '请先登录',
-    'invalid token': '登录已过期,请重新打开 Mini App',
-    'prediction not found': '注单不存在或已结算',
-    'prediction already settled': '该注单已结算,无法重复操作',
-    'current odds unavailable': '当前赔率不可用,稍后再试',
+    // 下注 / 串关
+    'insufficient balance': 'err.insufficient_balance',
+    'matchId and score are required': 'err.match_and_score_required',
+    'matchId and score are required for every leg': 'err.match_and_score_required_leg',
+    'unknown marketType': 'err.unknown_market',
+    'unknown marketType in leg': 'err.unknown_market_leg',
+    'same match cannot appear twice in a parlay': 'err.same_match_twice',
+    'match not found': 'err.match_not_found',
+    'match already started or settled': 'err.match_started_or_settled',
+    'match already settled': 'err.match_already_settled',
+    'no odds offered for this match': 'err.no_odds_for_match',
+    'odds not available': 'err.odds_unavailable',
+    'current odds unavailable': 'err.current_odds_unavailable',
+    'selection not offered': 'err.selection_not_offered',
+    'score not offered': 'err.score_not_offered',
+    'duplicate prediction': 'err.duplicate_prediction',
+    'duplicate parlay request in progress': 'err.duplicate_parlay',
+    'too close to kickoff': 'err.too_close_to_kickoff',
+    'market temporarily locked (goal scored)': 'err.market_locked_goal',
+    'low odds single bet limit exceeded': 'err.low_odds_limit',
+    'quarter-line AH not allowed in parlay leg': 'err.quarter_line_in_parlay',
+    'all legs settled — wait for payout': 'err.parlay_all_legs_settled',
+    'market line shifted, cashout temporarily unavailable; will settle automatically on match end':
+        'err.market_line_shifted',
+    'parlay has lost leg': 'err.parlay_has_lost_leg',
+    'parlay not found': 'err.parlay_not_found',
+    'parlay already settled': 'err.parlay_already_settled',
+    'prediction not found': 'err.prediction_not_found',
+    'prediction already settled': 'err.prediction_already_settled',
+    'prediction not pending': 'err.prediction_not_pending',
+    'invalid match id': 'err.invalid_match_id',
+    // 串关参数 / 范围
+    'parlay needs at least 2 legs': 'err.parlay_min_legs',
+    'parlay limited to 8 legs': 'err.parlay_max_legs',
+    // 充值 / 提现
+    'duplicate withdrawal': 'err.duplicate_withdrawal',
+    'this txHash has already been submitted': 'err.duplicate_tx_hash',
+    'txHash is required': 'err.tx_hash_required',
+    'address looks invalid': 'err.address_invalid',
+    'amount must be between 0 and 1,000,000': 'err.amount_out_of_range',
+    'chain must be trc20, eth, or btc': 'err.bad_chain',
+    'uploads disabled': 'err.uploads_disabled',
+    "form field 'file' missing": 'err.file_field_missing',
+    // Auth
+    'missing bearer token': 'err.missing_token',
+    'missing token': 'err.missing_token',
+    'invalid token': 'err.invalid_token',
+    'user not found': 'err.user_not_found',
+    // 系统级
+    'rate limited': 'err.rate_limited',
+    'events unavailable: provider is not API-Football': 'err.events_unavailable',
+    'stats unavailable: provider is not API-Football': 'err.stats_unavailable',
+    // 基础参数
+    'invalid body': 'err.invalid_body',
+    'bad action': 'err.bad_action',
+    'bad id': 'err.bad_id',
   };
-  if (exact.containsKey(raw)) return exact[raw]!;
+  final key = exact[raw];
+  if (key != null) return tr(key);
 
-  // prefix / pattern
-  if (raw.startsWith('parlay needs at least')) return '串关至少需要 2 关';
-  if (raw.startsWith('parlay limited to')) return '串关最多 8 关';
+  if (raw.startsWith('parlay needs at least')) return tr('err.parlay_min_legs');
+  if (raw.startsWith('parlay limited to')) return tr('err.parlay_max_legs');
   final notBettable = RegExp(r'^match (\d+) not bettable$').firstMatch(raw);
   if (notBettable != null) {
-    return '比赛 #${notBettable.group(1)} 已开始或不可下注';
+    return tr('err.match_not_bettable').replaceAll('{id}', notBettable.group(1)!);
   }
   final notAvail = RegExp(r'^match (\d+) not available$').firstMatch(raw);
   if (notAvail != null) {
-    return '比赛 #${notAvail.group(1)} 已下架';
+    return tr('err.match_not_available').replaceAll('{id}', notAvail.group(1)!);
   }
   final oddsMissing = RegExp(r'^odds for match (\d+) not available$').firstMatch(raw);
   if (oddsMissing != null) {
-    return '比赛 #${oddsMissing.group(1)} 的赔率暂时不可用';
+    return tr('err.match_odds_missing').replaceAll('{id}', oddsMissing.group(1)!);
   }
   final selMissing = RegExp(r'^selection not offered for match (\d+)$').firstMatch(raw);
   if (selMissing != null) {
-    return '比赛 #${selMissing.group(1)} 的选项已下架';
+    return tr('err.match_selection_missing').replaceAll('{id}', selMissing.group(1)!);
   }
-  return raw; // 未知 key,按原样显示(回退到英文胜过抛 stack)
+  // 包装型内部错误(后端 fmt.Errorf 拼出来的)— 不展示原 stack,统一兜底
+  if (raw.startsWith('odds fetch failed:') ||
+      raw.startsWith('parse multipart:') ||
+      raw.startsWith('save user:') ||
+      raw.startsWith('issue token')) {
+    return tr('err.generic');
+  }
+  // 完全未知 → 友好兜底,不再把原英文塞给中文用户
+  return tr('err.generic');
 }
 
 class ApiException implements Exception {
@@ -598,4 +755,14 @@ class ApiException implements Exception {
 
   @override
   String toString() => userMessage;
+}
+
+/// Telegram bot 元数据,/api/auth/config 返回。
+/// 浏览器环境登录(LoginWidget / oauth.telegram.org)需要 botUsername / botId。
+class AuthBotConfig {
+  AuthBotConfig({required this.botUsername, required this.botId});
+  final String botUsername;
+  final int botId;
+
+  bool get isConfigured => botUsername.isNotEmpty && botId > 0;
 }

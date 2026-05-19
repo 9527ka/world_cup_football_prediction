@@ -20,27 +20,54 @@ class LeaderboardPage extends StatefulWidget {
 class _LeaderboardPageState extends State<LeaderboardPage> {
   String _period = 'week';
   late Future<_LBBundle> _future;
+  String _lastLocale = '';
 
   @override
   void initState() {
     super.initState();
+    _lastLocale = I18n.instance.locale;
     _future = _load();
+    // 切语言时(zh ↔ 其它)后端会换虚拟池子 / 重新 seed,我们必须重拉一次。
+    // 单纯 root tree rebuild(MaterialApp 包的 AnimatedBuilder)只会重 build,
+    // 不会让 FutureBuilder 重新 future-= _load()。
+    I18n.instance.addListener(_onLocaleChanged);
+  }
+
+  @override
+  void dispose() {
+    I18n.instance.removeListener(_onLocaleChanged);
+    super.dispose();
+  }
+
+  void _onLocaleChanged() {
+    final cur = I18n.instance.locale;
+    if (cur == _lastLocale) return;
+    _lastLocale = cur;
+    if (!mounted) return;
+    setState(() => _future = _load());
   }
 
   Future<_LBBundle> _load() async {
     final api = widget.state.api;
-    final futures = <Future<dynamic>>[
-      api.leaderboard(limit: 50, period: _period),
+    // 公共榜单 + home config 是核心数据,必须成功。
+    // 透传当前 locale:仅参与 seed(让中英子集略不同),池子是 60 名 CN+EN 混合(2026-05-18 起)。
+    // 限 10 名:用户需求"只显示前 10",免堆叠太多虚拟玩家。
+    final results = await Future.wait([
+      api.leaderboard(limit: 10, period: _period, locale: I18n.instance.locale),
       api.homeConfig(),
-    ];
+    ]);
+    // 我的排名是装饰性数据 — 401(token 过期)/网络失败时降级为 null,
+    // 不能让它把整页拖崩(看公共榜单不需要登录)。
+    MyRank? myRank;
     if (widget.state.isAuthenticated) {
-      futures.add(api.myRank(period: _period));
+      try {
+        myRank = await api.myRank(period: _period);
+      } catch (_) {/* silently skip "我的排名" section */}
     }
-    final results = await Future.wait(futures);
     return _LBBundle(
       list: results[0] as List<LeaderboardEntry>,
       config: results[1] as HomeConfig,
-      myRank: results.length > 2 ? results[2] as MyRank : null,
+      myRank: myRank,
     );
   }
 

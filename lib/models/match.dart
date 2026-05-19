@@ -1,3 +1,5 @@
+import '../services/i18n.dart';
+
 class PeriodScore {
   final int home;
   final int away;
@@ -129,8 +131,8 @@ class LiveDetail {
   }
 
   String get minuteDisplay {
-    if (periodLabel == 'HT') return '中';
-    if (periodLabel == 'PEN') return '点';
+    if (periodLabel == 'HT') return tr('live.minute_ht');
+    if (periodLabel == 'PEN') return tr('live.minute_pen');
     if (extra > 0) return '$minute+$extra\'';
     if (minute > 0) return '$minute\'';
     return '';

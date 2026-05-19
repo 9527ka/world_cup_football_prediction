@@ -9,6 +9,7 @@ import '../services/telegram.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/light_card.dart';
+import '../widgets/login_wall.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -54,7 +55,14 @@ class _ShareEarnPageState extends State<ShareEarnPage> {
   @override
   void initState() {
     super.initState();
-    _future = widget.state.api.getReferrals();
+    _load();
+  }
+
+  void _load() {
+    if (!widget.state.isAuthenticated) return;
+    setState(() {
+      _future = widget.state.api.getReferrals();
+    });
   }
 
   String _link(String code) =>
@@ -68,6 +76,21 @@ class _ShareEarnPageState extends State<ShareEarnPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (!widget.state.isAuthenticated) {
+      return Scaffold(
+        appBar: _appBar(context, tr('feat.share.title')),
+        body: DecoratedBox(
+          decoration: _pageBg,
+          child: SafeArea(
+            child: LoginRequiredCard(
+              state: widget.state,
+              label: tr('feat.share.title'),
+              onLoggedIn: _load,
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       appBar: _appBar(context, tr('feat.share.title')),
       body: DecoratedBox(
