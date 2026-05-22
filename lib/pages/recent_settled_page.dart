@@ -23,6 +23,8 @@ class RecentSettledPage extends StatefulWidget {
 }
 
 class _RecentSettledPageState extends State<RecentSettledPage> {
+  static final _fmtDate = DateFormat('MM-dd HH:mm');
+
   List<MatchInfo> _matches = const [];
   bool _loading = true;
   String? _error;
@@ -108,7 +110,10 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
                     ),
                   )
                 else
-                  ...visible.map(_card),
+                  ...visible.map((m) => KeyedSubtree(
+                    key: ValueKey(m.id),
+                    child: _card(m),
+                  )),
                 const SizedBox(height: 24),
               ],
             ),
@@ -200,7 +205,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
   }
 
   Widget _card(MatchInfo m) {
-    final fmt = DateFormat('MM-dd HH:mm');
+    final fmt = _fmtDate;
     final sc = m.scores;
     final hg = sc?.home ?? 0;
     final ag = sc?.away ?? 0;
@@ -261,7 +266,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
                 TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 24),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(localizedTeam(m.home),
+                  child: Text(localizedTeam(m.home, apiZh: m.homeZh),
                       textAlign: TextAlign.right,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -285,7 +290,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
                           fontFamily: T.fontMono)),
                 ),
                 Expanded(
-                  child: Text(localizedTeam(m.away),
+                  child: Text(localizedTeam(m.away, apiZh: m.awayZh),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

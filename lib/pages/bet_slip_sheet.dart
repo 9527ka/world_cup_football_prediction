@@ -31,6 +31,9 @@ class BetSlipSheet {
   }
 }
 
+final _fmtBal = NumberFormat('#,##0.00');
+final _fmtInt = NumberFormat('#,##0');
+
 class _BetSlipSheetBody extends StatefulWidget {
   const _BetSlipSheetBody({required this.state});
   final AppState state;
@@ -83,9 +86,20 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
     });
     final matchIds = slip.items.map((s) => s.matchId).toSet();
     bool anyChanged = false;
+    final oddsFutures = <Future<MapEntry<int, OddsSnapshot?>>>[];
     for (final mid in matchIds) {
+      oddsFutures.add(
+        widget.state.api.getOdds(mid)
+            .then<MapEntry<int, OddsSnapshot?>>((o) => MapEntry(mid, o))
+            .catchError((_) => MapEntry<int, OddsSnapshot?>(mid, null)),
+      );
+    }
+    final results = await Future.wait(oddsFutures);
+    for (final entry in results) {
+      final mid = entry.key;
+      final odds = entry.value;
+      if (odds == null) continue;
       try {
-        final odds = await widget.state.api.getOdds(mid);
         for (final s in List.of(slip.items.where((x) => x.matchId == mid))) {
           double? newPrice;
           switch (s.marketType) {
@@ -151,7 +165,7 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
             anyChanged = true;
           }
         }
-      } catch (_) { /* swallow — outdated price beats no UI */ }
+      } catch (_) {}
     }
     if (mounted) {
       setState(() {
@@ -439,7 +453,7 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
           Row(
             children: [
               Expanded(
-                child: Text('${localizedTeam(s.home)} vs ${localizedTeam(s.away)}',
+                child: Text('${localizedTeam(s.home, apiZh: s.homeZh)} vs ${localizedTeam(s.away, apiZh: s.awayZh)}',
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w800, color: T.ink),
                     overflow: TextOverflow.ellipsis),
@@ -531,7 +545,7 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
     bool balanceOK = true;
     if (_balance != null && totalStake > _balance! && !slip.isEmpty) {
       balanceOK = false;
-      hint = tr('slip.insufficient_detail').replaceAll('{n}', NumberFormat('#,##0.00').format(_balance!));
+      hint = tr('slip.insufficient_detail').replaceAll('{n}', _fmtBal.format(_balance!));
     }
 
     return Container(
@@ -580,7 +594,7 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
                 Text(tr('slip.total_stake'),
                     style: TextStyle(color: T.inkLo, fontSize: 12, fontWeight: FontWeight.w600)),
                 const Spacer(),
-                Text('${NumberFormat('#,##0').format(totalStake)} USDT',
+                Text('${_fmtInt.format(totalStake)} USDT',
                     style: const TextStyle(
                         color: T.ink,
                         fontSize: 14,
@@ -595,7 +609,7 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
               Text(tr('slip.payout'),
                   style: TextStyle(color: T.inkLo, fontSize: 12, fontWeight: FontWeight.w600)),
               const Spacer(),
-              Text('+${NumberFormat('#,##0.00').format(potentialPayout)} USDT',
+              Text('+${_fmtBal.format(potentialPayout)} USDT',
                   style: const TextStyle(
                       color: T.up,
                       fontSize: 16,

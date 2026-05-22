@@ -4,7 +4,7 @@
 //  1. Mini App(Telegram WebApp 注入 initData):initialize() 自动登录,无需用户操作
 //  2. 普通浏览器:用户访问需要鉴权的功能时 LoginWall 弹层 → 点击「Telegram 登录」
 //     → **整页跳转**到 https://oauth.telegram.org/auth?... → 用户授权 → Telegram
-//     redirect 回 https://cup.douwen.me/tg_auth_done.html#tgAuthResult=...
+//     redirect 回 https://tgfootball.com/tg_auth_done.html#tgAuthResult=...
 //     → 中转页 JS 自己 POST /api/auth/telegram-web 拿 token → location.replace
 //     到主页 `?tg_token=...` → Flutter main() 检测 URL → 写 token + 清 URL。
 //
@@ -12,7 +12,7 @@
 // 维持会话;再加 popup blocker 风险。整页跳转 = 没第三方 cookie / 没 opener /
 // 没 postMessage origin 问题,稳定。
 //
-// 重要:bot 必须在 BotFather 用 `/setdomain cup.douwen.me` 配置好,否则
+// 重要:bot 必须在 BotFather 用 `/setdomain tgfootball.com` 配置好,否则
 // Telegram OAuth 会拒绝(报 "Bot domain invalid")。
 import 'dart:async';
 import 'dart:js_interop';

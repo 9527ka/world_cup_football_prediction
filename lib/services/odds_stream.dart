@@ -13,15 +13,19 @@ class OddsStream {
 
   WebSocketChannel? _channel;
   bool _closed = false;
-  int _backoffMs = 500;
+  int _backoffMs = 5000;
   String? _token;
   final Set<int> _subscribed = {};
 
   final _oddsCtrl = StreamController<OddsSnapshot>.broadcast();
   final _matchesCtrl = StreamController<List<MatchInfo>>.broadcast();
+  final _connectedCtrl = StreamController<bool>.broadcast();
+  bool _connected = false;
 
   Stream<OddsSnapshot> get odds => _oddsCtrl.stream;
   Stream<List<MatchInfo>> get matches => _matchesCtrl.stream;
+  Stream<bool> get connected => _connectedCtrl.stream;
+  bool get isConnected => _connected;
 
   /// Set/replace the auth token used for the `?token=` query param.
   /// Forces a reconnect with the new credential when it changes.
@@ -47,7 +51,8 @@ class OddsStream {
       });
       _channel = WebSocketChannel.connect(authed);
       _channel!.stream.listen(_onMessage, onError: _onError, onDone: _reconnect);
-      _backoffMs = 500;
+      _backoffMs = 5000;
+      _setConnected(true);
       for (final id in _subscribed) {
         _send({'action': 'subscribe', 'matchId': id});
       }
@@ -94,11 +99,18 @@ class OddsStream {
     _reconnect();
   }
 
+  void _setConnected(bool v) {
+    if (_connected == v) return;
+    _connected = v;
+    _connectedCtrl.add(v);
+  }
+
   void _reconnect() {
     if (_closed) return;
+    _setConnected(false);
     _channel = null;
     final delay = _backoffMs;
-    _backoffMs = (_backoffMs * 2).clamp(500, 10000);
+    _backoffMs = (_backoffMs * 2).clamp(5000, 30000);
     Timer(Duration(milliseconds: delay), connect);
   }
 
@@ -107,5 +119,6 @@ class OddsStream {
     await _channel?.sink.close();
     await _oddsCtrl.close();
     await _matchesCtrl.close();
+    await _connectedCtrl.close();
   }
 }

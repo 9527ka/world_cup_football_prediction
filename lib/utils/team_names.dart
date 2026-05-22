@@ -326,6 +326,7 @@ const Map<String, String> _zh = {
   'FC Winterthur': '温特图尔',
   'FC Zurich': '苏黎世',
   'Grasshopper Club Zurich': '草蜢',
+  'FC Aarau': '阿劳',
   'Lausanne-Sport': '洛桑体育',
   'Servette Geneva': '塞尔维特',
   'Young Boys Bern': '伯尔尼年轻人',
@@ -430,6 +431,18 @@ const Map<String, String> _zh = {
   'Panserraikos FC': '潘塞拉伊科斯',
   'Volos NPS': '沃洛斯',
 
+  // Portugal - Primeira Liga 补缺
+  'Torreense': '托雷恩塞',
+  'FC Torreense': '托雷恩塞',
+  'Boavista FC': '博阿维斯塔',
+  'CD Nacional': '国民',
+  'CF Os Belenenses': '贝伦人',
+  'Portimonense SC': '波尔蒂芒人',
+  'CS Maritimo': '马里蒂莫',
+  'FC Vizela': '维泽拉',
+  'SC Farense': '法鲁人',
+  'Vitoria Guimaraes SC': '吉马良斯',
+
   // Russia - Premier League (俄超)
   'CSKA Moscow': '莫斯科中央陆军',
   'FC Baltika Kaliningrad': '波罗的海',
@@ -447,6 +460,8 @@ const Map<String, String> _zh = {
   'Lokomotiv Moscow': '莫斯科火车头',
   'PFK Krylia Sovetov Samara': '萨马拉苏维埃之翼',
   'RFK Akhmat Grozny': '艾哈迈特',
+  'Rotor Volgograd': '伏尔加格勒转子',
+  'Ural': '乌拉尔',
 
   // Ukraine - Premier League (乌超)
   'FC Dynamo Kyiv': '基辅迪纳摩',
@@ -679,6 +694,8 @@ const Map<String, String> _zh = {
   'SV 07 Elversberg': '埃尔沃斯堡',
   'SV Darmstadt 98': '达姆施塔特',
   'VfL Bochum': '波鸿',
+  'Rot-Weiß Essen': '埃森红白',
+  'Rot-Weiss Essen': '埃森红白',
 
   // England - Championship(英冠)
   'Hull City': '赫尔城',
@@ -1253,8 +1270,13 @@ const Map<String, String> _zhLeague = {
   'Türkiye - Süper Lig': '土超',
   'Brazil - Brasileiro Série A': '巴甲',
   'Mexico - Liga MX Clausura': '墨西哥甲',
+  // 2026-05-22 apifootball_leagues.go 里 262 的显示名是 "Mexico - Liga MX",不带 Clausura
+  'Mexico - Liga MX': '墨甲',
   'Japan - J League': '日职联',
   'Japan - J League 2': '日乙',
+  // 2026-05-22 apifootball_leagues.go 改用 J1/J2 命名,补这两个 key
+  'Japan - J1 League': '日职联',
+  'Japan - J2 League': '日乙',
   'Republic of Korea - K League 1': '韩K1',
   'Republic of Korea - K League 2': '韩K2',
   // ─── 兜底:prettifySlug 输出(每个单词首字母大写,无连字符) ───
@@ -1299,6 +1321,164 @@ const Map<String, String> _zhLeague = {
   'Usa Mls': '美职',
   'Mexico Liga Mx Clausura': '墨甲',
   'Argentina Liga Profesional': '阿甲',
+
+  // ─── 2026-05-22 联赛扩展(72 个新增联赛) ───────────────────────────────
+  // 命名约定:延续懂球帝/虎扑常用 → 主流国家用「国名+级别」(英冠/英甲/英乙),
+  // 非主流用国名+杯赛/级别(俄甲/捷甲/秘鲁甲)。下列 key 严格匹配
+  // apiFootballLeagueDisplayNames 输出。
+  // 英格兰下级
+  'England - League One': '英甲',
+  'England - League Two': '英乙',
+  'England - National League': '英国家联赛',
+  // 德/法下级
+  'Germany - 3. Liga': '德丙',
+  'France - National 1': '法丙',
+  // 荷/葡下级
+  'Netherlands - Eerste Divisie': '荷乙',
+  'Portugal - Segunda Liga': '葡乙',
+  'Portugal - Liga 3': '葡丙',
+  // 土耳其下级
+  'Türkiye - 1. Lig': '土甲',
+  'Türkiye - 2. Lig': '土乙',
+  // 苏格兰下级
+  'Scotland - Championship': '苏冠',
+  'Scotland - League One': '苏甲',
+  'Scotland - League Two': '苏乙',
+  // 比/瑞下级
+  'Belgium - Challenger Pro League': '比乙',
+  'Switzerland - Challenge League': '瑞士挑战',
+  // 奥/丹/瑞典/挪/波下级
+  'Austria - 2. Liga': '奥乙',
+  'Denmark - 1. Division': '丹甲',
+  'Sweden - Superettan': '瑞典甲',
+  'Norway - 1. Division': '挪甲',
+  'Poland - I Liga': '波兰甲',
+  // 希/俄/乌下级
+  'Greece - Super League 2': '希乙',
+  'Russia - First League': '俄甲',
+  'Ukraine - Persha Liga': '乌甲',
+  // 中欧/东欧
+  'Czechia - Czech Liga': '捷甲',
+  'Czechia - FNL': '捷乙',
+  'Croatia - HNL': '克甲',
+  'Serbia - Super Liga': '塞超',
+  'Slovakia - Super Liga': '斯洛伐克超',
+  'Hungary - NB I': '匈牙利甲',
+  'Romania - Liga I': '罗甲',
+  'Bulgaria - First League': '保加利亚超',
+  'Cyprus - 1. Division': '塞浦路斯甲',
+  'Israel - Ligat Ha\'al': '以色列超',
+  'Iceland - Úrvalsdeild': '冰岛超',
+  // 巴西多级
+  'Brazil - Brasileiro Série B': '巴乙',
+  'Brazil - Brasileiro Série C': '巴丙',
+  'Brazil - Brasileiro Série D': '巴丁',
+  'Brazil - Paulista A1': '圣保罗州联赛',
+  'Brazil - Gaúcho 1': '南大河州联赛',
+  'Brazil - Carioca 1': '里约州联赛',
+  // 美洲下级
+  'USA - USL Championship': '美乙',
+  'USA - USL League One': '美职甲',
+  'USA - MLS Next Pro': 'MLS 次级',
+  'Mexico - Liga de Expansión MX': '墨乙',
+  'Argentina - Primera Nacional': '阿乙',
+  'Argentina - Copa de la Liga Profesional': '阿联赛杯',
+  'Chile - Primera División': '智利甲',
+  'Chile - Primera B': '智利乙',
+  'Colombia - Primera A': '哥伦比亚甲',
+  'Colombia - Primera B': '哥伦比亚乙',
+  'Peru - Primera División': '秘鲁甲',
+  'Peru - Segunda División': '秘鲁乙',
+  'Ecuador - Liga Pro': '厄瓜多尔甲',
+  'Uruguay - Primera División': '乌拉圭甲',
+  'Paraguay - Primera División': '巴拉圭甲',
+  // 亚洲下级
+  'Japan - J3 League': '日丙',
+  'China - China League 2': '中乙',
+  'Saudi Arabia - Division 1': '沙特甲',
+  'UAE - Pro League': '阿联酋超',
+  'Qatar - Stars League': '卡塔尔超',
+  'Thailand - Thai League 2': '泰甲',
+  'Iran - Persian Gulf Pro': '伊朗超',
+  'Australia - A-League': '澳超',
+  // 非洲
+  'Egypt - Premier League': '埃及超',
+  'Morocco - Botola Pro': '摩洛哥超',
+  'Algeria - Ligue 1': '阿尔及利亚甲',
+  'Tunisia - Ligue 1': '突尼斯甲',
+  'Nigeria - NPFL': '尼日利亚超',
+  'South Africa - Premier Soccer League': '南非超',
+
+  // ─── prettifySlug fallback(后端拉不到 upstream 真名时) ────────────────
+  'England League One': '英甲',
+  'England League Two': '英乙',
+  'England National League': '英国家联赛',
+  'Germany 3 Liga': '德丙',
+  'France National 1': '法丙',
+  'Netherlands Eerste Divisie': '荷乙',
+  'Portugal Segunda Liga': '葡乙',
+  'Portugal Liga 3': '葡丙',
+  'Turkiye 1 Lig': '土甲',
+  'Turkiye 2 Lig': '土乙',
+  'Scotland Championship': '苏冠',
+  'Scotland League One': '苏甲',
+  'Scotland League Two': '苏乙',
+  'Belgium Challenger Pro': '比乙',
+  'Switzerland Challenge League': '瑞士挑战',
+  'Austria 2 Liga': '奥乙',
+  'Denmark 1 Division': '丹甲',
+  'Sweden Superettan': '瑞典甲',
+  'Norway 1 Division': '挪甲',
+  'Poland 1 Liga': '波兰甲',
+  'Greece Super League 2': '希乙',
+  'Russia First League': '俄甲',
+  'Ukraine Persha Liga': '乌甲',
+  'Czechia Czech Liga': '捷甲',
+  'Czechia Fnl': '捷乙',
+  'Croatia Hnl': '克甲',
+  'Serbia Super Liga': '塞超',
+  'Slovakia Super Liga': '斯洛伐克超',
+  'Hungary Nb I': '匈牙利甲',
+  'Romania Liga I': '罗甲',
+  'Bulgaria First League': '保加利亚超',
+  'Cyprus 1 Division': '塞浦路斯甲',
+  'Israel Ligat Haal': '以色列超',
+  'Iceland Urvalsdeild': '冰岛超',
+  'Brazil Brasileiro Serie B': '巴乙',
+  'Brazil Brasileiro Serie C': '巴丙',
+  'Brazil Brasileiro Serie D': '巴丁',
+  'Brazil Paulista A1': '圣保罗州联赛',
+  'Brazil Gaucho 1': '南大河州联赛',
+  'Brazil Carioca 1': '里约州联赛',
+  'Usa Usl Championship': '美乙',
+  'Usa Usl League One': '美职甲',
+  'Usa Mls Next Pro': 'MLS 次级',
+  'Mexico Liga Expansion': '墨乙',
+  'Argentina Primera Nacional': '阿乙',
+  'Argentina Copa Liga': '阿联赛杯',
+  'Chile Primera Division': '智利甲',
+  'Chile Primera B': '智利乙',
+  'Colombia Primera A': '哥伦比亚甲',
+  'Colombia Primera B': '哥伦比亚乙',
+  'Peru Primera Division': '秘鲁甲',
+  'Peru Segunda Division': '秘鲁乙',
+  'Ecuador Liga Pro': '厄瓜多尔甲',
+  'Uruguay Primera Division': '乌拉圭甲',
+  'Paraguay Primera Division': '巴拉圭甲',
+  'Japan J3 League': '日丙',
+  'China China League 2': '中乙',
+  'Saudi Arabia Division 1': '沙特甲',
+  'Uae Pro League': '阿联酋超',
+  'Qatar Stars League': '卡塔尔超',
+  'Thailand Thai League 2': '泰甲',
+  'Iran Persian Gulf Pro': '伊朗超',
+  'Australia A League': '澳超',
+  'Egypt Premier League': '埃及超',
+  'Morocco Botola Pro': '摩洛哥超',
+  'Algeria Ligue 1': '阿尔及利亚甲',
+  'Tunisia Ligue 1': '突尼斯甲',
+  'Nigeria Npfl': '尼日利亚超',
+  'South Africa Premier Soccer League': '南非超',
 };
 
 // ─── Generated 14-language maps ──────────────────────────────────────────
@@ -1328,10 +1508,11 @@ const Map<String, Map<String, String>> _leagueI18n = {
 ///   1. admin override (zh / en columns only — runtime-editable)
 ///   2. hardcoded map for that locale
 ///   3. fallback to English original (admin en-override > raw upstream)
-String localizedTeam(String original) {
+String localizedTeam(String original, {String? apiZh}) {
   if (original.isEmpty) return original;
   final loc = I18n.instance.locale;
   if (loc == 'zh') {
+    if (apiZh != null && apiZh.isNotEmpty) return apiZh;
     return TeamOverrides.instance.nameZh(original) ??
         _zh[original] ??
         original;

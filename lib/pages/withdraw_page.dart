@@ -18,13 +18,14 @@ class WithdrawPage extends StatefulWidget {
 }
 
 class _WithdrawPageState extends State<WithdrawPage> {
+  static final _fmtBal = NumberFormat('#,##0.00');
+
   String _chain = 'trc20';
   Wallet? _wallet;
   final _addressCtrl = TextEditingController();
   final _amountCtrl = TextEditingController(text: '500');
   bool _submitting = false;
   String? _error;
-  String? _ok;
 
   @override
   void initState() {
@@ -43,7 +44,6 @@ class _WithdrawPageState extends State<WithdrawPage> {
         setState(() {
           _wallet = w;
           if (_error != null && _error!.startsWith(tr('wd.wallet_error'))) _error = null;
-          // 预填上次的提现地址(用户没动过输入框时才填,避免覆盖正在输入的内容)。
           if (_addressCtrl.text.isEmpty && w.lastWithdrawAddress.isNotEmpty) {
             _addressCtrl.text = w.lastWithdrawAddress;
           }
@@ -55,22 +55,38 @@ class _WithdrawPageState extends State<WithdrawPage> {
   }
 
   double get _fee {
+    if (_wallet == null) {
+      switch (_chain) {
+        case 'erc20': return 12;
+        case 'bep20': return 0.5;
+        default: return 1;
+      }
+    }
     switch (_chain) {
-      case 'erc20':
-        return 12;
-      case 'bep20':
-        return 0.5;
-      default:
-        return 1;
+      case 'erc20': return _wallet!.withdrawFeeERC20;
+      case 'bep20': return _wallet!.withdrawFeeBEP20;
+      default: return _wallet!.withdrawFeeTRC20;
     }
   }
 
+  String get _etaText => tr('wd.eta_value');
+
   Future<void> _submit() async {
+    if (_wallet != null && _wallet!.hasPendingWithdrawal) {
+      setState(() => _error = tr('err.pending_withdrawal'));
+      return;
+    }
     final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0;
     final addr = _addressCtrl.text.trim();
     final balance = _wallet?.balance ?? 0;
-    if (amt <= 0) {
-      setState(() => _error = tr('wd.amount_invalid'));
+    final minW = _wallet?.minWithdraw ?? 10;
+    final maxW = _wallet?.maxWithdraw ?? 1000000;
+    if (amt < minW) {
+      setState(() => _error = '${tr('wd.amount_invalid')} (min ${minW.toStringAsFixed(0)})');
+      return;
+    }
+    if (amt > maxW) {
+      setState(() => _error = '${tr('wd.amount_invalid')} (max ${maxW.toStringAsFixed(0)})');
       return;
     }
     if (amt > balance) {
@@ -84,15 +100,15 @@ class _WithdrawPageState extends State<WithdrawPage> {
     setState(() {
       _submitting = true;
       _error = null;
-      _ok = null;
     });
     try {
-      final w = await widget.state.api
+      await widget.state.api
           .submitWithdrawal(amount: amt, address: addr);
       _addressCtrl.clear();
       _amountCtrl.text = '500';
-      if (mounted) setState(() => _ok = '${tr('wd.submitted')} (#${w.id})');
-      await _loadWallet();
+      if (mounted) {
+        await _showWithdrawSuccessDialog(amt);
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
@@ -100,9 +116,47 @@ class _WithdrawPageState extends State<WithdrawPage> {
     }
   }
 
+  Future<void> _showWithdrawSuccessDialog(double amount) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: T.upDark, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(tr('wd.submitted'),
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('-${amount.toStringAsFixed(2)} USDT',
+                style: const TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.w800, color: T.down)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Navigator.of(context).pop(true);
+            },
+            child: Text(tr('common.confirm')),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 浏览器未登录:用引导卡替代表单。Mini App 内已登录,不会进。
     if (!widget.state.isAuthenticated) {
       return Scaffold(
         backgroundColor: T.bgPage,
@@ -125,6 +179,8 @@ class _WithdrawPageState extends State<WithdrawPage> {
         ),
       );
     }
+
+    final hasPending = _wallet?.hasPendingWithdrawal ?? false;
     final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0;
     final arrive = (amt - _fee).clamp(0, double.infinity);
     return Scaffold(
@@ -139,6 +195,26 @@ class _WithdrawPageState extends State<WithdrawPage> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                   children: [
+                    if (hasPending)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0x1AFF9800),
+                          border: Border.all(color: const Color(0x60FF9800)),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.hourglass_top, color: Color(0xFFE65100), size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(tr('err.pending_withdrawal'),
+                                  style: const TextStyle(fontSize: 12, color: Color(0xFFE65100), fontWeight: FontWeight.w600)),
+                            ),
+                          ],
+                        ),
+                      ),
                     _balanceCard(),
                     const SizedBox(height: 14),
                     _label(tr('wd.network')),
@@ -150,6 +226,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
                           const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       child: TextField(
                         controller: _addressCtrl,
+                        enabled: !hasPending,
                         style: const TextStyle(
                             color: T.ink, fontFamily: T.fontMono, fontSize: 12),
                         decoration: InputDecoration(
@@ -172,6 +249,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
                               Expanded(
                                 child: TextField(
                                   controller: _amountCtrl,
+                                  enabled: !hasPending,
                                   keyboardType:
                                       const TextInputType.numberWithOptions(
                                           decimal: true),
@@ -192,7 +270,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
                                       fontWeight: FontWeight.w700)),
                               const SizedBox(width: 8),
                               OutlinedButton(
-                                onPressed: () {
+                                onPressed: hasPending ? null : () {
                                   _amountCtrl.text =
                                       (_wallet?.balance ?? 0).toStringAsFixed(2);
                                   setState(() {});
@@ -204,7 +282,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
                                   minimumSize: const Size(0, 28),
                                 ),
                                 child: Text(tr('wd.all'),
-                                    style: TextStyle(
+                                    style: const TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w700)),
                               ),
@@ -233,17 +311,12 @@ class _WithdrawPageState extends State<WithdrawPage> {
                         padding: const EdgeInsets.only(top: 10),
                         child: Text(_error!, style: const TextStyle(color: T.down)),
                       ),
-                    if (_ok != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(_ok!, style: const TextStyle(color: T.upDark)),
-                      ),
                     const SizedBox(height: 14),
                     SizedBox(
                       width: double.infinity,
                       height: 48,
                       child: ElevatedButton(
-                        onPressed: _submitting ? null : _submit,
+                        onPressed: (_submitting || hasPending) ? null : _submit,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: T.brand,
                           foregroundColor: Colors.white,
@@ -306,7 +379,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(NumberFormat('#,##0.00').format(bal),
+              Text(_fmtBal.format(bal),
                   style: const TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.w800,
@@ -321,7 +394,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
             ],
           ),
           const SizedBox(height: 4),
-          Text(tr('wd.min_amount'),
+          Text('${tr('wd.min_amount')} ${(_wallet?.minWithdraw ?? 10).toStringAsFixed(0)} USDT',
               style: const TextStyle(fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
         ],
       ),
@@ -336,10 +409,11 @@ class _WithdrawPageState extends State<WithdrawPage> {
       );
 
   Widget _chainTabs() {
-    final tabs = const [
-      ['trc20', 'TRC20', '1 USDT'],
-      ['erc20', 'ERC20', '12 USDT'],
-      ['bep20', 'BEP20', '0.5 USDT'],
+    final w = _wallet;
+    final tabs = [
+      ['trc20', 'TRC20', '${(w?.withdrawFeeTRC20 ?? 1).toStringAsFixed(w != null && w.withdrawFeeTRC20 == w.withdrawFeeTRC20.roundToDouble() ? 0 : 1)} USDT'],
+      ['erc20', 'ERC20', '${(w?.withdrawFeeERC20 ?? 12).toStringAsFixed(w != null && w.withdrawFeeERC20 == w.withdrawFeeERC20.roundToDouble() ? 0 : 1)} USDT'],
+      ['bep20', 'BEP20', '${(w?.withdrawFeeBEP20 ?? 0.5).toStringAsFixed(1)} USDT'],
     ];
     return Row(
       children: tabs.map((c) {
@@ -411,11 +485,10 @@ class _WithdrawPageState extends State<WithdrawPage> {
   }
 
   Widget _summary(double amt, double arrive) {
-    final eta = _chain == 'erc20' ? tr('wd.eta_slow') : tr('wd.eta_fast');
     final rows = [
       [tr('wd.fee_label'), '${_fee.toStringAsFixed(2)} USDT', T.inkMd, false],
       [tr('wd.actual_label'), '${arrive.toStringAsFixed(2)} USDT', T.upDark, true],
-      [tr('wd.eta_label'), eta, T.inkMd, false],
+      [tr('wd.eta_label'), _etaText, T.inkMd, false],
     ];
     return LightCard(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),

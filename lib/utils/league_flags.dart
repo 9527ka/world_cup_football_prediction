@@ -127,6 +127,8 @@ class LeagueFlag extends StatelessWidget {
           child: Image.network(
             logoUrl,
             fit: BoxFit.contain,
+            cacheWidth: 64,
+            cacheHeight: 64,
             errorBuilder: (_, __, ___) => globeFallback,
             loadingBuilder: (ctx, child, p) => p == null ? child : globeFallback,
           ),

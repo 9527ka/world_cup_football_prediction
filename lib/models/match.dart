@@ -47,6 +47,7 @@ class MatchEvent {
   final String type; // "Goal" | "Card" | "subst" | "Var"
   final String detail; // "Yellow Card" | "Normal Goal" | "Red Card" | ...
   final String player;
+  final String? playerZh;
 
   MatchEvent({
     required this.minute,
@@ -55,6 +56,7 @@ class MatchEvent {
     this.type = '',
     this.detail = '',
     this.player = '',
+    this.playerZh,
   });
 
   factory MatchEvent.fromJson(Map<String, dynamic> j) => MatchEvent(
@@ -66,6 +68,7 @@ class MatchEvent {
         type: j['type'] ?? '',
         detail: j['detail'] ?? '',
         player: j['player'] ?? '',
+        playerZh: j['playerZh'] as String?,
       );
 
   bool get isGoal => type == 'Goal';
@@ -160,8 +163,9 @@ class MatchInfo {
   final double? mlDraw;
   final double? mlAway;
   final LiveDetail? live;
-  // Admin-managed: true → 列表里整体提前(无论 live / 时间 / 联赛热度)。
   final bool pinned;
+  final String? homeZh;
+  final String? awayZh;
 
   MatchInfo({
     required this.id,
@@ -179,6 +183,8 @@ class MatchInfo {
     this.mlAway,
     this.live,
     this.pinned = false,
+    this.homeZh,
+    this.awayZh,
   });
 
   factory MatchInfo.fromJson(Map<String, dynamic> j) {
@@ -203,6 +209,8 @@ class MatchInfo {
       mlAway: ml == null ? null : (ml['away'] as num?)?.toDouble(),
       live: liveJson == null ? null : LiveDetail.fromJson(liveJson),
       pinned: j['pinned'] == true,
+      homeZh: j['homeZh'] as String?,
+      awayZh: j['awayZh'] as String?,
     );
   }
 
@@ -493,6 +501,8 @@ class ParlayLeg {
   final String legStatus;
   final String home;
   final String away;
+  final String? homeZh;
+  final String? awayZh;
   final String leagueName;
   final String leagueSlug;
 
@@ -505,6 +515,8 @@ class ParlayLeg {
     required this.legStatus,
     required this.home,
     required this.away,
+    this.homeZh,
+    this.awayZh,
     required this.leagueName,
     required this.leagueSlug,
   });
@@ -518,6 +530,8 @@ class ParlayLeg {
         legStatus: j['legStatus'] ?? 'pending',
         home: j['home'] ?? '',
         away: j['away'] ?? '',
+        homeZh: j['homeZh'] as String?,
+        awayZh: j['awayZh'] as String?,
         leagueName: j['leagueName'] ?? '',
         leagueSlug: j['leagueSlug'] ?? '',
       );
@@ -570,6 +584,15 @@ class Wallet {
   final String ethDepositAddress;
   final String btcDepositAddress;
   final String lastWithdrawAddress;
+  final bool hasPendingWithdrawal;
+  final double withdrawFeeTRC20;
+  final double withdrawFeeERC20;
+  final double withdrawFeeBEP20;
+  final int withdrawETAMinutes;
+  final double minDeposit;
+  final double maxDeposit;
+  final double minWithdraw;
+  final double maxWithdraw;
   final DateTime updatedAt;
   Wallet({
     required this.balance,
@@ -577,6 +600,15 @@ class Wallet {
     required this.ethDepositAddress,
     required this.btcDepositAddress,
     required this.lastWithdrawAddress,
+    required this.hasPendingWithdrawal,
+    required this.withdrawFeeTRC20,
+    required this.withdrawFeeERC20,
+    required this.withdrawFeeBEP20,
+    required this.withdrawETAMinutes,
+    required this.minDeposit,
+    required this.maxDeposit,
+    required this.minWithdraw,
+    required this.maxWithdraw,
     required this.updatedAt,
   });
   factory Wallet.fromJson(Map<String, dynamic> j) => Wallet(
@@ -585,6 +617,15 @@ class Wallet {
         ethDepositAddress: j['ethDepositAddress'] ?? '',
         btcDepositAddress: j['btcDepositAddress'] ?? '',
         lastWithdrawAddress: j['lastWithdrawAddress'] ?? '',
+        hasPendingWithdrawal: j['hasPendingWithdrawal'] == true,
+        withdrawFeeTRC20: double.tryParse('${j['withdrawFeeTRC20'] ?? '1'}') ?? 1,
+        withdrawFeeERC20: double.tryParse('${j['withdrawFeeERC20'] ?? '12'}') ?? 12,
+        withdrawFeeBEP20: double.tryParse('${j['withdrawFeeBEP20'] ?? '0.5'}') ?? 0.5,
+        withdrawETAMinutes: int.tryParse('${j['withdrawETAMinutes'] ?? '30'}') ?? 30,
+        minDeposit: double.tryParse('${j['minDeposit'] ?? '10'}') ?? 10,
+        maxDeposit: double.tryParse('${j['maxDeposit'] ?? '1000000'}') ?? 1000000,
+        minWithdraw: double.tryParse('${j['minWithdraw'] ?? '10'}') ?? 10,
+        maxWithdraw: double.tryParse('${j['maxWithdraw'] ?? '1000000'}') ?? 1000000,
         updatedAt: DateTime.parse(j['updatedAt']).toLocal(),
       );
 }
@@ -656,6 +697,7 @@ class LeaderboardEntry {
   final int userId;
   final String username;
   final String firstName;
+  final String photoUrl;
   final int wins;
   final int total;
   final double payout;
@@ -664,6 +706,7 @@ class LeaderboardEntry {
     required this.userId,
     required this.username,
     required this.firstName,
+    this.photoUrl = '',
     required this.wins,
     required this.total,
     required this.payout,
@@ -673,6 +716,7 @@ class LeaderboardEntry {
         userId: (j['userId'] as num).toInt(),
         username: j['username'] ?? '',
         firstName: j['firstName'] ?? '',
+        photoUrl: j['photoUrl'] ?? '',
         wins: (j['wins'] ?? 0) as int,
         total: (j['total'] ?? 0) as int,
         payout: (j['payout'] ?? 0).toDouble(),
@@ -834,6 +878,8 @@ class BetRow {
   final Prediction prediction;
   final String home;
   final String away;
+  final String? homeZh;
+  final String? awayZh;
   final String leagueName;
   final String leagueSlug;
   final DateTime? matchDate;
@@ -845,6 +891,8 @@ class BetRow {
     required this.prediction,
     required this.home,
     required this.away,
+    this.homeZh,
+    this.awayZh,
     required this.leagueName,
     required this.leagueSlug,
     this.matchDate,
@@ -857,6 +905,8 @@ class BetRow {
         prediction: Prediction.fromJson(j),
         home: j['home'] ?? '',
         away: j['away'] ?? '',
+        homeZh: j['homeZh'] as String?,
+        awayZh: j['awayZh'] as String?,
         leagueName: j['leagueName'] ?? '',
         leagueSlug: j['leagueSlug'] ?? '',
         matchDate: j['matchDate'] == null
@@ -935,6 +985,6 @@ class HomeConfig {
         customerService:
             (j['customerService'] as String?)?.trim().isNotEmpty == true
                 ? (j['customerService'] as String).trim()
-                : 'go_home_007',
+                : 'espn_football',
       );
 }

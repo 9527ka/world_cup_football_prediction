@@ -262,6 +262,8 @@ class TeamCrest extends StatelessWidget {
             child: Image.network(
               override,
               fit: BoxFit.contain,
+              cacheWidth: 96,
+              cacheHeight: 96,
               errorBuilder: (_, __, ___) => fallback,
               loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
             ),
@@ -295,9 +297,12 @@ class TeamCrest extends StatelessWidget {
   }
 
   Widget _cdnImage(int id, Widget fallback) {
+    // 列表里 crest 一般 ~32px,缓存按 96px(3x retina)上限解码,避免占大内存
     return Image.network(
       'https://media.api-sports.io/football/teams/$id.png',
       fit: BoxFit.contain,
+      cacheWidth: 96,
+      cacheHeight: 96,
       errorBuilder: (_, __, ___) => fallback,
       loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
     );

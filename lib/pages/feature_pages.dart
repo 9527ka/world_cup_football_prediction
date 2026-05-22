@@ -48,14 +48,24 @@ class ShareEarnPage extends StatefulWidget {
 }
 
 class _ShareEarnPageState extends State<ShareEarnPage> {
-  static const _botUsername = 'this_hai_wang_bot';
+  String _botUsername = '';
   Future<({String inviteCode, int invitedCount, double totalCommission})>?
       _future;
 
   @override
   void initState() {
     super.initState();
+    _loadBotUsername();
     _load();
+  }
+
+  void _loadBotUsername() async {
+    try {
+      final cfg = await widget.state.api.authConfig();
+      if (mounted && cfg.botUsername.isNotEmpty) {
+        setState(() => _botUsername = cfg.botUsername);
+      }
+    } catch (_) {}
   }
 
   void _load() {
@@ -66,7 +76,7 @@ class _ShareEarnPageState extends State<ShareEarnPage> {
   }
 
   String _link(String code) =>
-      code.isEmpty ? '' : 'https://t.me/$_botUsername?start=$code';
+      (code.isEmpty || _botUsername.isEmpty) ? '' : 'https://t.me/$_botUsername?start=$code';
 
   void _copy(String text) {
     if (text.isEmpty) return;
@@ -246,17 +256,23 @@ class _StatItem extends StatelessWidget {
 // 2. RebatePage — 返水中心
 // ═════════════════════════════════════════════════════════════════════════════
 
-class RebatePage extends StatelessWidget {
-  const RebatePage({super.key});
+class RebatePage extends StatefulWidget {
+  const RebatePage({super.key, required this.state});
+  final AppState state;
 
-  static const _vipTiers = <_VipTier>[
-    _VipTier('feat.rebate.tier_normal', '0.3%', '0'),
-    _VipTier('feat.rebate.tier_silver', '0.4%', '5,000'),
-    _VipTier('feat.rebate.tier_gold', '0.5%', '20,000'),
-    _VipTier('feat.rebate.tier_platinum', '0.6%', '80,000'),
-    _VipTier('feat.rebate.tier_diamond', '0.8%', '200,000'),
-    _VipTier('feat.rebate.tier_supreme', '1.0%', '500,000'),
-  ];
+  @override
+  State<RebatePage> createState() => _RebatePageState();
+}
+
+class _RebatePageState extends State<RebatePage> {
+  Future<VipStatus>? _future;
+  final _money = NumberFormat('#,##0');
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.state.api.getVip();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -265,161 +281,172 @@ class RebatePage extends StatelessWidget {
       body: DecoratedBox(
         decoration: _pageBg,
         child: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            children: [
-              // ── current rate ──
-              LightCard(
-                gradient: T.goldGradient,
-                child: Column(
-                  children: [
-                    Text(tr('feat.rebate.current'),
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xCC5A3A10))),
-                    const SizedBox(height: 4),
-                    const Text('0.5%',
-                        style: TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF5A3A10))),
-                    const SizedBox(height: 2),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0x335A3A10),
-                        borderRadius: BorderRadius.circular(T.rXs),
-                      ),
-                      child: Text(tr('feat.rebate.gold'),
-                          style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF5A3A10))),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── pending rebate ──
-              _sectionLabel(tr('feat.rebate.pending')),
-              LightCard(
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('0.00 USDT',
-                              style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w800,
-                                  color: T.ink)),
-                          const SizedBox(height: 2),
-                          Text(tr('feat.rebate.auto'),
-                              style: const TextStyle(fontSize: 12, color: T.inkMd)),
-                        ],
-                      ),
-                    ),
-                    ElevatedButton(
-                      onPressed: null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: T.inkSubtle,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(T.rSm)),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 10),
-                      ),
-                      child: Text(tr('feat.rebate.claim'),
-                          style: const TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w700)),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── tier table ──
-              _sectionLabel(tr('feat.rebate.tier_table')),
-              LightCard(
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    // header
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      decoration: const BoxDecoration(
-                        color: T.fill,
-                        borderRadius: BorderRadius.vertical(
-                            top: Radius.circular(T.rMd)),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                              flex: 2,
-                              child: Text(tr('feat.rebate.col_level'),
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: T.inkLo))),
-                          Expanded(
-                              flex: 2,
-                              child: Text(tr('feat.rebate.col_rate'),
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: T.inkLo))),
-                          Expanded(
-                              flex: 3,
-                              child: Text(tr('feat.rebate.col_min'),
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: T.inkLo))),
-                        ],
-                      ),
-                    ),
-                    // rows
-                    for (var i = 0; i < _vipTiers.length; i++)
-                      _RebateRow(
-                          tier: _vipTiers[i],
-                          highlighted: _vipTiers[i].name == 'feat.rebate.tier_gold',
-                          last: i == _vipTiers.length - 1),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── history ──
-              _sectionLabel(tr('feat.rebate.history')),
-              LightCard(
-                child: SizedBox(
-                  height: 80,
-                  child: Center(
+          child: FutureBuilder<VipStatus>(
+            future: _future,
+            builder: (ctx, snap) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator(color: T.brandDeep));
+              }
+              final vip = snap.data;
+              final tierKey = vip?.currentTier.key ?? 'feat.rebate.tier_normal';
+              final rate = vip?.currentTier.rate ?? '0.3%';
+              return ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                children: [
+                  // ── current rate ──
+                  LightCard(
+                    gradient: T.goldGradient,
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.receipt_long_rounded,
-                            size: 28, color: T.inkSubtle),
-                        const SizedBox(height: 6),
-                        Text(tr('feat.rebate.history_empty'),
-                            style: const TextStyle(fontSize: 13, color: T.inkLo)),
+                        Text(tr('feat.rebate.current'),
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xCC5A3A10))),
+                        const SizedBox(height: 4),
+                        Text(rate,
+                            style: const TextStyle(
+                                fontSize: 36,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF5A3A10))),
+                        const SizedBox(height: 2),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0x335A3A10),
+                            borderRadius: BorderRadius.circular(T.rXs),
+                          ),
+                          child: Text(tr(tierKey),
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF5A3A10))),
+                        ),
                       ],
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
+
+                  const SizedBox(height: 16),
+
+                  // ── pending rebate ──
+                  _sectionLabel(tr('feat.rebate.pending')),
+                  LightCard(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('0.00 USDT',
+                                  style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w800,
+                                      color: T.ink)),
+                              const SizedBox(height: 2),
+                              Text(tr('feat.rebate.auto'),
+                                  style: const TextStyle(fontSize: 12, color: T.inkMd)),
+                            ],
+                          ),
+                        ),
+                        ElevatedButton(
+                          onPressed: null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: T.inkSubtle,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(T.rSm)),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 10),
+                          ),
+                          child: Text(tr('feat.rebate.claim'),
+                              style: const TextStyle(
+                                  fontSize: 14, fontWeight: FontWeight.w700)),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // ── tier table ──
+                  _sectionLabel(tr('feat.rebate.tier_table')),
+                  if (vip != null)
+                    LightCard(
+                      padding: EdgeInsets.zero,
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: const BoxDecoration(
+                              color: T.fill,
+                              borderRadius: BorderRadius.vertical(
+                                  top: Radius.circular(T.rMd)),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                    flex: 2,
+                                    child: Text(tr('feat.rebate.col_level'),
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: T.inkLo))),
+                                Expanded(
+                                    flex: 2,
+                                    child: Text(tr('feat.rebate.col_rate'),
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: T.inkLo))),
+                                Expanded(
+                                    flex: 3,
+                                    child: Text(tr('feat.rebate.col_min'),
+                                        textAlign: TextAlign.right,
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: T.inkLo))),
+                              ],
+                            ),
+                          ),
+                          for (var i = 0; i < vip.tiers.length; i++)
+                            _RebateRow(
+                                tier: _VipTier(vip.tiers[i].key, vip.tiers[i].rate,
+                                    _money.format(vip.tiers[i].minStake)),
+                                highlighted: vip.tiers[i].key == vip.currentTier.key,
+                                last: i == vip.tiers.length - 1),
+                        ],
+                      ),
+                    ),
+
+                  const SizedBox(height: 16),
+
+                  // ── history ──
+                  _sectionLabel(tr('feat.rebate.history')),
+                  LightCard(
+                    child: SizedBox(
+                      height: 80,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.receipt_long_rounded,
+                                size: 28, color: T.inkSubtle),
+                            const SizedBox(height: 6),
+                            Text(tr('feat.rebate.history_empty'),
+                                style: const TextStyle(fontSize: 13, color: T.inkLo)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -826,7 +853,7 @@ class CustomerServicePage extends StatelessWidget {
     ['feat.cs.q4', 'feat.cs.a4'],
   ];
 
-  String get _csHandle => state?.customerServiceTG ?? 'go_home_007';
+  String get _csHandle => state?.customerServiceTG ?? 'espn_football';
 
   @override
   Widget build(BuildContext context) {
@@ -1080,32 +1107,37 @@ class RulesPage extends StatelessWidget {
     _RuleSection(
       title: 'feat.rules.s1.title',
       icon: Icons.sports_soccer_rounded,
-      items: ['feat.rules.s1.i1', 'feat.rules.s1.i2', 'feat.rules.s1.i3'],
+      items: ['feat.rules.s1.i1', 'feat.rules.s1.i2', 'feat.rules.s1.i3', 'feat.rules.s1.i4'],
     ),
     _RuleSection(
       title: 'feat.rules.s2.title',
       icon: Icons.account_balance_wallet_rounded,
-      items: ['feat.rules.s2.i1', 'feat.rules.s2.i2', 'feat.rules.s2.i3'],
+      items: ['feat.rules.s2.i1', 'feat.rules.s2.i2', 'feat.rules.s2.i3', 'feat.rules.s2.i4'],
     ),
     _RuleSection(
       title: 'feat.rules.s3.title',
-      icon: Icons.calculate_rounded,
-      items: ['feat.rules.s3.i1', 'feat.rules.s3.i2', 'feat.rules.s3.i3'],
+      icon: Icons.layers_rounded,
+      items: ['feat.rules.s3.i1', 'feat.rules.s3.i2', 'feat.rules.s3.i3', 'feat.rules.s3.i4'],
     ),
     _RuleSection(
       title: 'feat.rules.s4.title',
-      icon: Icons.undo_rounded,
+      icon: Icons.monetization_on_rounded,
       items: ['feat.rules.s4.i1', 'feat.rules.s4.i2', 'feat.rules.s4.i3'],
     ),
     _RuleSection(
       title: 'feat.rules.s5.title',
+      icon: Icons.calculate_rounded,
+      items: ['feat.rules.s5.i1', 'feat.rules.s5.i2', 'feat.rules.s5.i3'],
+    ),
+    _RuleSection(
+      title: 'feat.rules.s6.title',
+      icon: Icons.undo_rounded,
+      items: ['feat.rules.s6.i1', 'feat.rules.s6.i2', 'feat.rules.s6.i3'],
+    ),
+    _RuleSection(
+      title: 'feat.rules.s7.title',
       icon: Icons.warning_amber_rounded,
-      items: [
-        'feat.rules.s5.i1',
-        'feat.rules.s5.i2',
-        'feat.rules.s5.i3',
-        'feat.rules.s5.i4',
-      ],
+      items: ['feat.rules.s7.i1', 'feat.rules.s7.i2', 'feat.rules.s7.i3', 'feat.rules.s7.i4'],
     ),
   ];
 

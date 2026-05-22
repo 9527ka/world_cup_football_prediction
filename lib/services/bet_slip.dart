@@ -6,6 +6,8 @@ class BetSelection {
   final int matchId;
   final String home;
   final String away;
+  final String? homeZh;
+  final String? awayZh;
   final String leagueName;
   final String leagueSlug;
   final String marketType;
@@ -17,6 +19,8 @@ class BetSelection {
     required this.matchId,
     required this.home,
     required this.away,
+    this.homeZh,
+    this.awayZh,
     required this.leagueName,
     required this.leagueSlug,
     required this.marketType,

@@ -10,7 +10,6 @@ import '../services/app_state.dart';
 import '../services/auth_gate.dart';
 import '../services/bet_slip.dart';
 import '../services/i18n.dart';
-import '../services/player_names.dart';
 import '../services/stream_feed.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
@@ -60,7 +59,12 @@ String _normalizeScoreKey(String marketType, String score) {
   return score;
 }
 
+final _fmtBal = NumberFormat('#,##0.00');
+final _fmtStake = NumberFormat('#,##0');
+final _fmtDate = DateFormat('MM-dd . HH:mm');
+
 class _MatchDetailPageState extends State<MatchDetailPage> {
+
   OddsSnapshot? _odds;
   _BetSelection? _selected;
   StreamSubscription<OddsSnapshot>? _sub;
@@ -103,7 +107,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   /// 必须 PostFrame 测量后回灌。drawer 含动态显示的 _placeOK / _placeError 卡片,
   /// 高度会变 → 用 GlobalKey 实时跟随。
   final GlobalKey _drawerKey = GlobalKey();
-  double _drawerHeight = 230; // 初始合理猜测,首帧后被实际值覆盖
+  double _drawerHeight = 230;
+  bool _drawerMeasurePending = false;
 
   // 只有 settled(已结束)的比赛完全锁住下注。pending 和 live 都允许投注。
   bool get _locked => _match.isSettled;
@@ -126,21 +131,14 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     _sub = widget.state.stream.odds.listen((s) {
       if (s.matchId == widget.match.id && mounted) {
         _diffAndFlash(_odds, s);
+        final hadLock = _odds?.lockUntil;
         setState(() {
           _odds = s;
           if (_selected != null) {
             final live = _priceForSelection(_selected!, s);
             if (live <= 0) {
-              // Market closed (e.g. both teams scored → BTTS settled,
-              // total goals exceeded OU line, current score advanced past
-              // the picked correct_score). Auto-clear so the bet button
-              // can't fire at a price the backend has already rejected.
               _selected = null;
             } else if ((live - _selected!.price).abs() > 0.005) {
-              // Price drifted but selection still valid — replace the
-              // tile so the bet button label and the eventual POST body
-              // both reflect the LATEST live price, not the one the user
-              // tapped 10 s ago.
               _selected = _BetSelection(
                 marketType: _selected!.marketType,
                 score: _selected!.score,
@@ -150,6 +148,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             }
           }
         });
+        if (s.lockUntil != hadLock) _maybeStartLockTimer();
       }
     });
     // Live match push: keep _match in sync with the latest score/status so
@@ -165,27 +164,24 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         }
       }
     });
-    try {
-      final initial = await widget.state.api.getOdds(widget.match.id);
-      if (mounted) setState(() => _odds = initial);
-    } catch (_) {/* odds may not be ready yet */}
+    final futures = <Future>[];
+    futures.add(widget.state.api.getOdds(widget.match.id).then((v) {
+      if (mounted) setState(() => _odds = v);
+    }).catchError((_) {}));
     if (widget.state.isAuthenticated) {
-      try {
-        final s = await widget.state.api.getStats();
+      futures.add(widget.state.api.getStats().then((s) {
         if (mounted) setState(() => _stats = s);
-      } catch (_) {}
-      await _loadMyBets();
+      }).catchError((_) {}));
+      futures.add(_loadMyBets());
     }
-    // 拉一次历史,然后每 30s 刷新一次(后端每分钟写一笔)。
-    _refreshHistory();
-    _historyTimer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshHistory());
+    futures.add(_refreshHistory());
+    await Future.wait(futures);
+    if (!_locked) {
+      _historyTimer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshHistory());
+    }
 
-    // 滚球封盘倒计时 1s 重绘 — 仅在 live 时跑,否则白消耗 CPU。
-    if (_isLive) {
-      _lockTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    }
+    // 滚球封盘倒计时 — 仅在有 lockUntil 时才跑 1s 计时器,lock 到期自动停。
+    _maybeStartLockTimer();
 
     // 加载 stream feed cache(若已在列表页拉过会直接命中,无网络开销)
     StreamFeed.instance.ensure(widget.state.api).then((_) {
@@ -283,8 +279,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       globalContext.callMethod(
         'openLiveStream'.toJS,
         url.toJS,
-        localizedTeam(m.home).toJS,
-        localizedTeam(m.away).toJS,
+        localizedTeam(m.home, apiZh: m.homeZh).toJS,
+        localizedTeam(m.away, apiZh: m.awayZh).toJS,
       );
     } catch (_) {}
   }
@@ -322,39 +318,15 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Future<void> _refreshStatsAndEvents() async {
-    // 仅有 live / settled 才有意义;pending 比赛上游会返回空
     if (!_isLive && !_match.isSettled) return;
-    try {
-      final r = await widget.state.api.getMatchStats(widget.match.id);
-      if (!mounted) return;
-      setState(() {
-        _statsHome = r.home;
-        _statsAway = r.away;
-      });
-    } catch (_) {/* 503 or transient — silent */}
-    try {
-      final ev = await widget.state.api.getMatchEvents(widget.match.id);
-      if (!mounted) return;
-      setState(() => _events = ev);
-      // When the user is reading in Chinese, fire a backend lookup for the
-      // player names attached to the events so the next paint can show the
-      // dongqiudi-translated form instead of "M. Salah". Fire-and-forget;
-      // a setState after success swaps the labels in place.
-      if (I18n.instance.locale == 'zh') {
-        final names = <String>{};
-        for (final e in ev) {
-          if (e.player.isNotEmpty) names.add(e.player);
-        }
-        if (names.isNotEmpty) {
-          PlayerNames.instance
-              .ensureLoaded(widget.state.api.baseUrl, names,
-                  authToken: widget.state.api.token)
-              .then((_) {
-            if (mounted) setState(() {});
-          });
-        }
-      }
-    } catch (_) {}
+    await Future.wait([
+      widget.state.api.getMatchStats(widget.match.id).then((r) {
+        if (mounted) setState(() { _statsHome = r.home; _statsAway = r.away; });
+      }).catchError((_) {}),
+      widget.state.api.getMatchEvents(widget.match.id).then((ev) {
+        if (mounted) setState(() => _events = ev);
+      }).catchError((_) {}),
+    ]);
   }
 
   Future<void> _refreshHistory() async {
@@ -400,6 +372,23 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           setState(() => _flashes.remove(s.score));
         });
       }
+    }
+  }
+
+  @override
+  void _maybeStartLockTimer() {
+    final lu = _odds?.lockUntil;
+    if (lu != null && lu.isAfter(DateTime.now())) {
+      if (_lockTickTimer?.isActive == true) return;
+      _lockTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        final lu2 = _odds?.lockUntil;
+        if (lu2 == null || lu2.isBefore(DateTime.now())) {
+          _lockTickTimer?.cancel();
+          _lockTickTimer = null;
+        }
+        setState(() {});
+      });
     }
   }
 
@@ -471,17 +460,20 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Widget _buildScaffold(BuildContext context) {
-    // 每帧后测一次 drawer 高度,差超过 2px 才回灌(避免无限 setState)。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _drawerKey.currentContext;
-      if (ctx == null || !mounted) return;
-      final box = ctx.findRenderObject() as RenderBox?;
-      if (box == null || !box.hasSize) return;
-      final h = box.size.height;
-      if ((h - _drawerHeight).abs() > 2) {
-        setState(() => _drawerHeight = h);
-      }
-    });
+    if (!_drawerMeasurePending) {
+      _drawerMeasurePending = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _drawerMeasurePending = false;
+        final ctx = _drawerKey.currentContext;
+        if (ctx == null || !mounted) return;
+        final box = ctx.findRenderObject() as RenderBox?;
+        if (box == null || !box.hasSize) return;
+        final h = box.size.height;
+        if ((h - _drawerHeight).abs() > 2) {
+          setState(() => _drawerHeight = h);
+        }
+      });
+    }
     final bottomPad = _locked ? 96.0 : (_drawerHeight + 16);
     return Scaffold(
       extendBody: true,
@@ -567,7 +559,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             Row(
               children: [
                 Text('${tr('common.balance')} ', style: const TextStyle(fontSize: 11, color: T.inkMd)),
-                Text(NumberFormat('#,##0.00').format(_stats!.balance),
+                Text(_fmtBal.format(_stats!.balance),
                     style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
@@ -582,7 +574,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   Widget _hero() {
     final m = _match;
-    final fmt = DateFormat('MM-dd · HH:mm');
+    final fmt = _fmtDate;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
       child: Container(
@@ -635,7 +627,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     children: [
                       TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
                       const SizedBox(height: 8),
-                      Text(localizedTeam(m.home),
+                      Text(localizedTeam(m.home, apiZh: m.homeZh),
                           style: const TextStyle(
                               fontSize: 13, fontWeight: FontWeight.w700, color: T.ink)),
                       Text(tr('detail.home'),
@@ -682,7 +674,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     children: [
                       TeamCrest(name: m.away, id: m.awayId, leagueSlug: m.leagueSlug, size: 56, borderRadius: 14),
                       const SizedBox(height: 8),
-                      Text(localizedTeam(m.away),
+                      Text(localizedTeam(m.away, apiZh: m.awayZh),
                           style: const TextStyle(
                               fontSize: 13, fontWeight: FontWeight.w700, color: T.ink)),
                       Text(tr('detail.away'),
@@ -872,10 +864,35 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   // Bilateral bars centered around the team labels — the wider side wins.
 
   Widget _liveStatsSection() {
+    // corners / yellow / red 三项优先用 WS push 的 _match.live(秒级新鲜),
+    // 与列表页同源,避免出现"列表显示 5 角,详情显示 4 角"的不一致。
+    // shots / shotsOnTarget 走 60s polling stats(LiveDetail 没这两项)。
+    final ld = _match.live;
+    int corH = _statsHome['corners'] ?? 0;
+    int corA = _statsAway['corners'] ?? 0;
+    int yelH = _statsHome['yellow'] ?? 0;
+    int yelA = _statsAway['yellow'] ?? 0;
+    int redH = _statsHome['red'] ?? 0;
+    int redA = _statsAway['red'] ?? 0;
+    if (ld != null) {
+      // 仅当 WS 数据 >= polling 数据时覆盖,防止旧 WS 帧倒退已 polling 的新数据
+      if (ld.homeCorners > corH || ld.awayCorners > corA) {
+        corH = ld.homeCorners;
+        corA = ld.awayCorners;
+      }
+      if (ld.homeYellow > yelH || ld.awayYellow > yelA) {
+        yelH = ld.homeYellow;
+        yelA = ld.awayYellow;
+      }
+      if (ld.homeRed > redH || ld.awayRed > redA) {
+        redH = ld.homeRed;
+        redA = ld.awayRed;
+      }
+    }
     final rows = <_StatRow>[
-      _StatRow(tr('stats.corners'), 'corners', _statsHome['corners'] ?? 0, _statsAway['corners'] ?? 0),
-      _StatRow(tr('stats.yellow'), 'yellow', _statsHome['yellow'] ?? 0, _statsAway['yellow'] ?? 0),
-      _StatRow(tr('stats.red'), 'red', _statsHome['red'] ?? 0, _statsAway['red'] ?? 0),
+      _StatRow(tr('stats.corners'), 'corners', corH, corA),
+      _StatRow(tr('stats.yellow'), 'yellow', yelH, yelA),
+      _StatRow(tr('stats.red'), 'red', redH, redA),
       _StatRow(tr('stats.shots'), 'shots', _statsHome['shots'] ?? 0, _statsAway['shots'] ?? 0),
       _StatRow(tr('stats.shots_on_target'), 'shotsOnTarget', _statsHome['shotsOnTarget'] ?? 0, _statsAway['shotsOnTarget'] ?? 0),
     ].where((r) => r.home > 0 || r.away > 0).toList();
@@ -1044,8 +1061,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     if (e.player.isNotEmpty) ...[
                       const SizedBox(width: 5),
                       Text(
-                          I18n.instance.locale == 'zh'
-                              ? PlayerNames.instance.localize(e.player)
+                          (I18n.instance.locale == 'zh' && e.playerZh != null && e.playerZh!.isNotEmpty)
+                              ? e.playerZh!
                               : e.player,
                           style: const TextStyle(
                               fontSize: 11, color: T.inkMd)),
@@ -1416,11 +1433,11 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           ),
           Row(
             children: [
-              tile('home', tr('detail.win_home'), localizedTeam(widget.match.home), ml.home, T.up),
+              tile('home', tr('detail.win_home'), localizedTeam(widget.match.home, apiZh: widget.match.homeZh), ml.home, T.up),
               const SizedBox(width: 8),
               tile('draw', tr('detail.draw'), tr('detail.winner_draw_hint'), ml.draw, T.brandDeep),
               const SizedBox(width: 8),
-              tile('away', tr('detail.win_away'), localizedTeam(widget.match.away), ml.away, T.down),
+              tile('away', tr('detail.win_away'), localizedTeam(widget.match.away, apiZh: widget.match.awayZh), ml.away, T.down),
             ],
           ),
         ],
@@ -1478,7 +1495,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             children: [
               Expanded(
                 child: _BinaryBetTile(
-                  label: localizedTeam(widget.match.home),
+                  label: localizedTeam(widget.match.home, apiZh: widget.match.homeZh),
                   hint: homeHint,
                   price: h.home,
                   selected: _selected?.marketType == MarketType.asianHandicap &&
@@ -1492,14 +1509,14 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                         marketType: MarketType.asianHandicap,
                         score: 'home',
                         price: h.home,
-                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.home)} $lineStr',
+                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.home, apiZh: widget.match.homeZh)} $lineStr',
                       )),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: _BinaryBetTile(
-                  label: localizedTeam(widget.match.away),
+                  label: localizedTeam(widget.match.away, apiZh: widget.match.awayZh),
                   hint: awayHint,
                   price: h.away,
                   selected: _selected?.marketType == MarketType.asianHandicap &&
@@ -1513,7 +1530,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                         marketType: MarketType.asianHandicap,
                         score: 'away',
                         price: h.away,
-                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.away)} ${h.line >= 0 ? '-' : '+'}${(h.line.abs()).toStringAsFixed(1)}',
+                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.away, apiZh: widget.match.awayZh)} ${h.line >= 0 ? '-' : '+'}${(h.line.abs()).toStringAsFixed(1)}',
                       )),
                 ),
               ),
@@ -1715,7 +1732,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   // ── bet drawer ────────────────────────────────────────────────────
   /// 紧凑下注栏 — 默认折叠态,只展示一个按钮。
-  /// 选中波胆/玩法之前:灰按钮"请先选择波胆",不可点
+  /// 选中波胆/玩法之前:灰按钮"请先选择赔率",不可点
   /// 选中后:亮蓝按钮"立即下注 · {label} @ {odds}",点击弹出 [_buildBetSheet]
   /// 滚球封盘期间:倒计时占位,不可点
   Widget _betDrawer() {
@@ -1819,6 +1836,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       matchId: m.id,
       home: m.home,
       away: m.away,
+      homeZh: m.homeZh,
+      awayZh: m.awayZh,
       leagueName: m.leagueName,
       leagueSlug: m.leagueSlug,
       marketType: sel.marketType,
@@ -1935,7 +1954,7 @@ class _ScoreCell extends StatelessWidget {
     final isDown = flash == 'down';
     final flashColor = isUp ? T.up : isDown ? T.down : null;
     final betted = myStake != null;
-    final stakeFmt = betted ? NumberFormat('#,##0').format(myStake) : '';
+    final stakeFmt = betted ? _fmtStake.format(myStake) : '';
 
     final BoxDecoration deco;
     if (betted) {
@@ -2151,7 +2170,7 @@ class _BinaryBetTile extends StatelessWidget {
     // price <= 0 表示该选项滚球期已不可投注(如已超过 OU line / 双方都进球后的 BTTS No)。
     final unavailable = price <= 0;
     final disabled = locked || betted || unavailable;
-    final stakeFmt = betted ? NumberFormat('#,##0').format(myStake) : '';
+    final stakeFmt = betted ? _fmtStake.format(myStake) : '';
 
     final BoxDecoration deco;
     if (betted) {
@@ -2311,7 +2330,7 @@ class _BetSheetState extends State<_BetSheet> {
   @override
   Widget build(BuildContext context) {
     final sel = widget.sel;
-    final stakeFmt = NumberFormat('#,##0').format(_stake);
+    final stakeFmt = _fmtStake.format(_stake);
     final payout = _stake * sel.price;
     return Container(
       decoration: const BoxDecoration(
@@ -2360,7 +2379,7 @@ class _BetSheetState extends State<_BetSheet> {
                   children: [
                     Text(tr('detail.bet_payout'),
                         style: const TextStyle(fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
-                    Text('+${NumberFormat('#,##0.00').format(payout)} USDT',
+                    Text('+${_fmtBal.format(payout)} USDT',
                         style: const TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w800,

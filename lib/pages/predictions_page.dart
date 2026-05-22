@@ -22,7 +22,12 @@ class PredictionsPage extends StatefulWidget {
   State<PredictionsPage> createState() => _PredictionsPageState();
 }
 
+final _predFmtDate = DateFormat('MM-dd HH:mm');
+final _predFmtBal = NumberFormat('#,##0.00');
+final _predFmtInt = NumberFormat('#,##0');
+
 class _PredictionsPageState extends State<PredictionsPage> {
+
   String _tab = 'all';
   String _topTab = 'single'; // 'single' | 'parlay'
   late Future<_MyBetsBundle> _future;
@@ -155,7 +160,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                       children: [
                         Text(
                           (profit >= 0 ? '+' : '') +
-                              NumberFormat('#,##0.00').format(profit),
+                              _predFmtBal.format(profit),
                           style: TextStyle(
                               fontSize: 26,
                               fontWeight: FontWeight.w800,
@@ -343,7 +348,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('${localizedTeam(b.home)} vs ${localizedTeam(b.away)}',
+            Text('${localizedTeam(b.home, apiZh: b.homeZh)} vs ${localizedTeam(b.away, apiZh: b.awayZh)}',
                 style: const TextStyle(fontSize: 13, color: T.inkMd)),
             const SizedBox(height: 6),
             Text('${_selectionLabel(pred.marketType, pred.score)} @ ${pred.oddsAtPlace.toStringAsFixed(2)}',
@@ -409,8 +414,8 @@ class _PredictionsPageState extends State<PredictionsPage> {
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
           content: Text(
             tr('pred.cancel_msg')
-                .replaceAll('{home}', localizedTeam(b.home))
-                .replaceAll('{away}', localizedTeam(b.away))
+                .replaceAll('{home}', localizedTeam(b.home, apiZh: b.homeZh))
+                .replaceAll('{away}', localizedTeam(b.away, apiZh: b.awayZh))
                 .replaceAll('{score}', b.prediction.score)
                 .replaceAll('{stake}', b.prediction.stake.toStringAsFixed(0)),
             style: const TextStyle(fontSize: 14, color: T.inkMd),
@@ -634,7 +639,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
       );
 
   Widget _kickoffLine(DateTime kickoff) {
-    final fmt = DateFormat('MM-dd HH:mm');
+    final fmt = _predFmtDate;
     final overdue = kickoff.isBefore(DateTime.now());
     final txt = (overdue
             ? tr('pred.kickoff_overdue')
@@ -664,7 +669,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
   }
 
   Widget _betCard(BetRow b) {
-    final fmt = DateFormat('MM-dd HH:mm');
+    final fmt = _predFmtDate;
     final pred = b.prediction;
     final eff = b.effectiveStatus;
     // half_won 视觉上算赢(让卡片绿色徽章+正向 payout);half_lost 算输(红色)。
@@ -732,7 +737,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                     child: Text.rich(
                       TextSpan(children: [
                         TextSpan(
-                            text: localizedTeam(b.home),
+                            text: localizedTeam(b.home, apiZh: b.homeZh),
                             style: const TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
@@ -743,7 +748,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                                 color: T.inkSubtle,
                                 fontWeight: FontWeight.w500)),
                         TextSpan(
-                            text: localizedTeam(b.away),
+                            text: localizedTeam(b.away, apiZh: b.awayZh),
                             style: const TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
@@ -840,7 +845,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               fontWeight: FontWeight.w600)),
                       const SizedBox(height: 2),
                       Text(
-                        isLost ? '—' : (isWon ? '+' : '') + NumberFormat('#,##0.00').format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
+                        isLost ? '—' : (isWon ? '+' : '') + _predFmtBal.format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w800,
@@ -947,7 +952,7 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
         statusColor = T.gold;
         statusLabel = tr('pred.status_open');
     }
-    final fmt = DateFormat('MM-dd HH:mm');
+    final fmt = _predFmtDate;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
@@ -1019,7 +1024,7 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('${localizedTeam(leg.home)} vs ${localizedTeam(leg.away)}',
+                        Text('${localizedTeam(leg.home, apiZh: leg.homeZh)} vs ${localizedTeam(leg.away, apiZh: leg.awayZh)}',
                             style: const TextStyle(
                                 fontSize: 12, fontWeight: FontWeight.w700, color: T.ink),
                             overflow: TextOverflow.ellipsis),
@@ -1043,19 +1048,19 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                       color: T.gold,
                       fontFamily: T.fontMono)),
               const SizedBox(width: 12),
-              Text('${tr('pred.stake_label')} ${NumberFormat('#,##0').format(p.stake)} U',
+              Text('${tr('pred.stake_label')} ${_predFmtInt.format(p.stake)} U',
                   style: const TextStyle(
                       fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600)),
               const Spacer(),
               if (p.status == 'won')
-                Text('+${NumberFormat('#,##0.00').format(p.payout)} U',
+                Text('+${_predFmtBal.format(p.payout)} U',
                     style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
                         color: T.up,
                         fontFamily: T.fontMono))
               else if (p.status == 'lost')
-                Text('-${NumberFormat('#,##0').format(p.stake)} U',
+                Text('-${_predFmtInt.format(p.stake)} U',
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w800, color: T.down))
               else ...[

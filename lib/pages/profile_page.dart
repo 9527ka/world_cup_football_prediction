@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../models/match.dart';
@@ -8,6 +9,7 @@ import '../services/auth_gate.dart';
 import '../services/i18n.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
+import '../widgets/language_picker.dart' show nativeLanguageNames;
 import '../widgets/light_card.dart';
 import '../widgets/login_wall.dart';
 import 'deposit_page.dart';
@@ -33,6 +35,8 @@ class _ProfileBundle {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  static final _fmtBal = NumberFormat('#,##0.00');
+
   late Future<_ProfileBundle> _future;
 
   @override
@@ -40,6 +44,8 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     _future = _load();
   }
+
+  void _refreshStats() => setState(() => _future = _load());
 
   Future<_ProfileBundle> _load() async {
     if (!widget.state.isAuthenticated) {
@@ -97,7 +103,7 @@ class _ProfilePageState extends State<ProfilePage> {
               if (authErr) _authErrorBanner() else _walletCard(s),
               _statsRow(s),
               _menuGroupBets(s),
-              _menuGroupSettings(),
+              _menuGroupSettings(vip),
               // 邮箱账号才有密码可改;纯 TG 账号 user.email 为空,不显示。
               if ((user?['email'] as String?)?.isNotEmpty ?? false)
                 _changePasswordButton(),
@@ -120,8 +126,55 @@ class _ProfilePageState extends State<ProfilePage> {
                 ? '@${user['username']}'
                 : 'User#${user['id']}';
     final initial = username.isEmpty ? '?' : username.characters.first.toUpperCase();
-    // 统一展示系统 user.id(对 Telegram + 邮箱账号都有效;telegramId 在邮箱账号上为 0,显示"0"不合理)。
-    final tid = user == null ? '-' : '${user['id']}';
+    // 用户编码:6 位数字,后端 backfill + 注册时生成。前台展示这个而不是
+     // 真实 user.id,既隐藏内部编号又方便客服报单。
+    final userCode = (user?['userCode'] as String?) ?? '';
+    // 邀请码(B+base36 / E+5位 base36),用户分享拉新用。和用户编码并列展示
+    // 让 TG Mini App 用户在 profile 直接能看到、复制,不必跳进"我的邀请"。
+    final inviteCode = (user?['inviteCode'] as String?) ?? '';
+
+    // Telegram 头像 URL(用户头像直链, t.me/i/userpic/*),
+    // 浏览器 widget 登录 + Mini App initData 登录都会带,
+    // UpsertUser 每次覆盖到 DB,再回到前端。
+    final photoUrl = (user?['photoUrl'] as String?) ?? '';
+
+    Widget avatar() {
+      final fallback = Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: T.brandGradientShort,
+        ),
+        alignment: Alignment.center,
+        child: Text(initial,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800)),
+      );
+      return Container(
+        width: 56, height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x4D11BAD9),
+                blurRadius: 10,
+                offset: Offset(0, 4))
+          ],
+        ),
+        child: ClipOval(
+          child: photoUrl.isEmpty
+              ? fallback
+              : Image.network(
+                  photoUrl,
+                  fit: BoxFit.cover,
+                  // 2x retina,避免按原图(可能 640px)解码占内存
+                  cacheWidth: 112,
+                  cacheHeight: 112,
+                  errorBuilder: (_, __, ___) => fallback,
+                ),
+        ),
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
@@ -134,24 +187,7 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
         child: Row(
           children: [
-            Container(
-              width: 56, height: 56,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: T.brandGradientShort,
-                border: Border.all(color: Colors.white, width: 3),
-                boxShadow: const [
-                  BoxShadow(
-                      color: Color(0x4D11BAD9),
-                      blurRadius: 10,
-                      offset: Offset(0, 4))
-                ],
-              ),
-              alignment: Alignment.center,
-              child: Text(initial,
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800)),
-            ),
+            avatar(),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -161,12 +197,55 @@ class _ProfilePageState extends State<ProfilePage> {
                       style: const TextStyle(
                           fontSize: 15, fontWeight: FontWeight.w800, color: T.ink)),
                   const SizedBox(height: 2),
-                  Text('${tr('profile.tg_id')}  $tid',
-                      style: const TextStyle(
-                          fontSize: 11,
-                          color: T.inkLo,
-                          fontWeight: FontWeight.w600,
-                          fontFamily: T.fontMono)),
+                  Row(
+                    children: [
+                      Text('${tr('profile.tg_id')}  ${userCode.isEmpty ? '-' : userCode}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: T.inkLo,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: T.fontMono)),
+                      if (userCode.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: userCode));
+                            Toast.show(context, tr('common.copied'));
+                          },
+                          borderRadius: BorderRadius.circular(4),
+                          child: const Padding(
+                            padding: EdgeInsets.all(2),
+                            child: Icon(Icons.copy_rounded, size: 14, color: T.inkLo),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (inviteCode.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Text('${tr('feat.share.invite_code')}  $inviteCode',
+                            style: const TextStyle(
+                                fontSize: 11,
+                                color: T.brandDeep,
+                                fontWeight: FontWeight.w700,
+                                fontFamily: T.fontMono)),
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: inviteCode));
+                            Toast.show(context, tr('common.copied'));
+                          },
+                          borderRadius: BorderRadius.circular(4),
+                          child: const Padding(
+                            padding: EdgeInsets.all(2),
+                            child: Icon(Icons.copy_rounded, size: 14, color: T.brandDeep),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 4),
                   // VIP 徽章 — 优先用 /api/me/vip 实时数据,未到货时回退到默认 (普通会员 0.3%)
                   Container(
@@ -309,7 +388,7 @@ class _ProfilePageState extends State<ProfilePage> {
               crossAxisAlignment: CrossAxisAlignment.baseline,
               textBaseline: TextBaseline.alphabetic,
               children: [
-                Text(NumberFormat('#,##0.00').format(s.balance),
+                Text(_fmtBal.format(s.balance),
                     style: const TextStyle(
                         color: Colors.white,
                         fontSize: 30,
@@ -334,7 +413,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           fontWeight: FontWeight.w600)),
                   Text(
                     (s.todayProfit >= 0 ? '+' : '') +
-                        NumberFormat('#,##0.00').format(s.todayProfit),
+                        _fmtBal.format(s.todayProfit),
                     style: TextStyle(
                         color: s.todayProfit >= 0 ? const Color(0xFF5DD394) : T.down,
                         fontSize: 10,
@@ -411,7 +490,7 @@ class _ProfilePageState extends State<ProfilePage> {
         child: Row(
           children: [
             _heroStat(tr('profile.month_pl'),
-                (s.monthProfit >= 0 ? '+' : '') + NumberFormat('#,##0.00').format(s.monthProfit),
+                (s.monthProfit >= 0 ? '+' : '') + _fmtBal.format(s.monthProfit),
                 s.monthProfit >= 0 ? T.upDark : T.down),
             _divider(),
             _heroStat(tr('profile.hit_rate'),
@@ -460,7 +539,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 T.brand, T.brandDeep, _goBets),
             _menuItem(tr('profile.leaderboard'),
                 tr('profile.leaderboard_pl')
-                    .replaceAll('{n}', NumberFormat('#,##0.00').format(s.monthProfit)),
+                    .replaceAll('{n}', _fmtBal.format(s.monthProfit)),
                 Icons.emoji_events_outlined,
                 const Color(0xFFFFD66E), T.gold, _goRank),
             _menuItem(tr('profile.rebate_center'), tr('profile.rebate_pending'), Icons.percent,
@@ -476,18 +555,21 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _menuGroupSettings() {
+  Widget _menuGroupSettings(VipStatus? vip) {
+    final vipLabel = vip != null
+        ? '${tr(vip.currentTier.key)}${tr('profile.vip_member')}'
+        : tr('profile.vip_badge_short');
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: LightCard(
         padding: EdgeInsets.zero,
         child: Column(
           children: [
-            _settingItem(tr('profile.vip_level'), Icons.workspace_premium_outlined, tr('profile.vip_gold'), _goVip),
+            _settingItem(tr('profile.vip_level'), Icons.workspace_premium_outlined, vipLabel, _goVip),
             _settingItem(tr('profile.rules'), Icons.help_outline, null, _goRules),
             _settingItem(tr('profile.contact'), Icons.support_agent_outlined, tr('profile.online'), _goService),
             _settingItem(tr('profile.language'), Icons.language, _languageNote(), _showLanguagePicker),
-            _settingItem(tr('profile.about'), Icons.info_outline, 'v0.2.0', _goAbout),
+            _settingItem(tr('profile.about'), Icons.info_outline, 'v1.0.1', _goAbout),
           ],
         ),
       ),
@@ -772,7 +854,7 @@ class _ProfilePageState extends State<ProfilePage> {
   void _snack(String m) => Toast.show(context, m);
 
   void _goRebate() => AntiSpam.guard('nav_rebate', () => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => const RebatePage())));
+      MaterialPageRoute(builder: (_) => RebatePage(state: widget.state))));
   void _goShareEarn() => AntiSpam.guard('nav_share', () => Navigator.push(context,
       MaterialPageRoute(builder: (_) => ShareEarnPage(state: widget.state))));
   void _goVip() => AntiSpam.guard('nav_vip', () => Navigator.push(context,
@@ -819,8 +901,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   String _languageNote() {
     final i18n = I18n.instance;
-    if (!i18n.userOverride) return tr('profile.language_auto');
-    return tr('profile.language_${i18n.locale}');
+    if (!i18n.userOverride) return 'Auto';
+    return nativeLanguageNames[i18n.locale] ?? i18n.locale;
   }
 
   void _showLanguagePicker() {
@@ -855,7 +937,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   final i18n = I18n.instance;
                   final detected = i18n.detectedLocale;
                   final raw = i18n.detectedRaw.isEmpty ? '—' : i18n.detectedRaw;
-                  final label = tr('profile.language_$detected');
+                  final label = nativeLanguageNames[detected] ?? detected;
                   // Show a small banner when an explicit override blocks the
                   // current Telegram language. One-tap "switch to {tg}" so the
                   // user doesn't need to know what "auto" means.
@@ -883,7 +965,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           ),
                           TextButton(
                             onPressed: () async {
-                              await I18n.instance.resetToAuto();
+                              I18n.instance.resetToAuto();
                               if (mounted) Navigator.pop(ctx);
                               if (mounted) setState(() {});
                             },
@@ -912,12 +994,12 @@ class _ProfilePageState extends State<ProfilePage> {
                       children: [
                         _langTile(ctx,
                             label:
-                                '${tr('profile.language_auto')} · ${tr('profile.language_${I18n.instance.detectedLocale}')}',
+                                'Auto · ${nativeLanguageNames[I18n.instance.detectedLocale] ?? I18n.instance.detectedLocale}',
                             code: null),
                         const Divider(height: 1, color: T.border),
                         for (final code in I18n.supported)
                           _langTile(ctx,
-                              label: tr('profile.language_$code'), code: code),
+                              label: nativeLanguageNames[code] ?? code, code: code),
                       ],
                     ),
                   ),
@@ -936,9 +1018,9 @@ class _ProfilePageState extends State<ProfilePage> {
     return InkWell(
       onTap: () async {
         if (code == null) {
-          await I18n.instance.resetToAuto();
+          I18n.instance.resetToAuto();
         } else {
-          await I18n.instance.setLocale(code);
+          I18n.instance.setLocale(code);
         }
         if (mounted) Navigator.pop(ctx);
         if (mounted) setState(() {});
@@ -959,10 +1041,18 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  void _goDeposit() => AntiSpam.guard('nav_deposit', () => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => DepositPage(state: widget.state))));
-  void _goWithdraw() => AntiSpam.guard('nav_withdraw', () => Navigator.push(context,
-      MaterialPageRoute(builder: (_) => WithdrawPage(state: widget.state))));
+  void _goDeposit() => AntiSpam.guard('nav_deposit', () {
+    Navigator.push<bool>(context,
+        MaterialPageRoute(builder: (_) => DepositPage(state: widget.state))).then((popped) {
+      if (popped == true) _refreshStats();
+    });
+  });
+  void _goWithdraw() => AntiSpam.guard('nav_withdraw', () {
+    Navigator.push<bool>(context,
+        MaterialPageRoute(builder: (_) => WithdrawPage(state: widget.state))).then((popped) {
+      if (popped == true) _refreshStats();
+    });
+  });
   void _goLedger() => AntiSpam.guard('nav_ledger', () => Navigator.push(context,
       MaterialPageRoute(builder: (_) => LedgerPage(state: widget.state))));
   void _goBets() => AntiSpam.guard('nav_bets', () => Navigator.push(context,

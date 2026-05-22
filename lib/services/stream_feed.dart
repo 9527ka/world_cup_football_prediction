@@ -210,9 +210,11 @@ class _IndexedStream {
 ///     ("队", "FC", "F.C.", "足球俱乐部", "俱乐部", "队伍")
 ///
 /// Visible for testing.
+final _whitespace = RegExp(r'\s+');
+
 String _normalize(String s) {
   if (s.isEmpty) return s;
-  var out = s.replaceAll(RegExp(r'\s+'), '').toLowerCase();
+  var out = s.replaceAll(_whitespace, '').toLowerCase();
   // Iteratively peel suffixes. "FC队" / "队FC" both occur in the wild.
   const suffixes = ['足球俱乐部', '俱乐部', '队伍', '队', 'fc', 'f.c.'];
   bool changed = true;

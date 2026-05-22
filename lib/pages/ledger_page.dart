@@ -17,7 +17,10 @@ class LedgerPage extends StatefulWidget {
 }
 
 class _LedgerPageState extends State<LedgerPage> {
-  static const _pageSize = 50;
+  static const _pageSize = 20;
+  static final _fmtBal = NumberFormat('#,##0.00');
+  static final _fmtDay = DateFormat('MM-dd');
+  static final _fmtTime = DateFormat('HH:mm');
 
   String _filter = 'all';
   List<LedgerEntry> _entries = [];
@@ -184,15 +187,15 @@ class _LedgerPageState extends State<LedgerPage> {
         child: Row(
           children: [
             _cell(tr('ledger.month_in'),
-                '+${NumberFormat('#,##0.00').format(s.monthIncome)}', T.upDark),
+                '+${_fmtBal.format(s.monthIncome)}', T.upDark),
             _divider(),
             _cell(tr('ledger.month_out'),
-                '-${NumberFormat('#,##0.00').format(s.monthExpense)}', T.down),
+                '-${_fmtBal.format(s.monthExpense)}', T.down),
             _divider(),
             _cell(
                 tr('ledger.month_net'),
                 (s.monthProfit >= 0 ? '+' : '') +
-                    NumberFormat('#,##0.00').format(s.monthProfit),
+                    _fmtBal.format(s.monthProfit),
                 s.monthProfit >= 0 ? T.ink : T.down,
                 big: true),
           ],
@@ -272,8 +275,8 @@ class _LedgerPageState extends State<LedgerPage> {
   }
 
   List<Widget> _buildGrouped(List<LedgerEntry> items) {
-    final dayFmt = DateFormat('MM-dd');
-    final timeFmt = DateFormat('HH:mm');
+    final dayFmt = _fmtDay;
+    final timeFmt = _fmtTime;
     final groups = <String, List<LedgerEntry>>{};
     for (final e in items) {
       final key = dayFmt.format(e.when);

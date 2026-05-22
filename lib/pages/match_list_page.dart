@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -8,7 +6,6 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
-import '../services/stream_feed.dart';
 import 'league_picker_page.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
@@ -29,6 +26,9 @@ enum _Tab { all, live, schedule, results }
 
 class _MatchListPageState extends State<MatchListPage>
     with SingleTickerProviderStateMixin {
+  static final _fmtMD = DateFormat('MM/dd');
+  static final _fmtHM = DateFormat('HH:mm');
+
   _Tab _tab = _Tab.all;
   String? _league;
 
@@ -42,11 +42,19 @@ class _MatchListPageState extends State<MatchListPage>
   int _total = 0;
   bool _loading = false;
   bool _hasMore = true;
-  static const _pageSize = 40;
+  static const _pageSize = 20;
+  static const _maxAccumulated = 200;
   final _scrollCtrl = ScrollController();
   final _chipScrollCtrl = ScrollController();
 
   List<LeagueInfo> _allLeagues = [];
+
+  // 缓存:过滤+排序结果。仅当 _matches / _league / _tab / _selectedDate 变化时
+  // 重算,scroll/setState 不再触发 O(n log n) 排序。
+  List<MatchInfo>? _cachedVisible;
+  int? _cacheKey;
+  int get _currentCacheKey =>
+      Object.hash(_matches.length, _matches.hashCode, _league, _tab, _selectedDate);
 
   // date picker for schedule / results
   late DateTime _selectedDate;
@@ -64,7 +72,6 @@ class _MatchListPageState extends State<MatchListPage>
     _buildDateOptions();
     _loadPage(reset: true);
     _loadConfigLeagues();
-    _loadStreamFeed();
     _scrollCtrl.addListener(_onScroll);
     _searchCtrl.addListener(_onSearchChanged);
 
@@ -99,11 +106,6 @@ class _MatchListPageState extends State<MatchListPage>
         }
       }
     });
-  }
-
-  Future<void> _loadStreamFeed() async {
-    await StreamFeed.instance.ensure(widget.state.api);
-    if (mounted) setState(() {}); // re-render rows so live FAB shows up
   }
 
   @override
@@ -182,6 +184,9 @@ class _MatchListPageState extends State<MatchListPage>
       setState(() {
         if (reset) _matches.clear();
         _matches.addAll(page.matches);
+        if (_matches.length > _maxAccumulated) {
+          _matches.removeRange(0, _matches.length - _maxAccumulated);
+        }
         _total = page.total;
         _hasMore = page.hasMore;
         _loading = false;
@@ -215,21 +220,6 @@ class _MatchListPageState extends State<MatchListPage>
     setState(() => _selectedDate = d);
   }
 
-  void _openStream(String url, {String? home, String? away}) {
-    // Open the stream in a draggable floating overlay (live_overlay.js).
-    // Bridge is exposed as window.openLiveStream(url, home, away).
-    // The overlay reuses live.html in an iframe so users can keep browsing
-    // matches and placing bets while watching — never blocks the Flutter UI.
-    try {
-      globalContext.callMethod(
-        'openLiveStream'.toJS,
-        url.toJS,
-        (home ?? '').toJS,
-        (away ?? '').toJS,
-      );
-    } catch (_) {}
-  }
-
   @override
   Widget build(BuildContext context) {
     final leagues = <String, String>{};
@@ -243,23 +233,23 @@ class _MatchListPageState extends State<MatchListPage>
       }
     }
 
-    // Client-side filter by league + date
-    var visible = _league == null
-        ? _matches.toList()
-        : _matches.where((m) => m.leagueSlug == _league).toList();
-
-    // For schedule/results tabs, filter by selected date
-    if (_tab == _Tab.schedule || _tab == _Tab.results) {
-      final sd = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-      visible = visible.where((m) {
-        final md = DateTime(m.date.year, m.date.month, m.date.day);
-        return md == sd;
-      }).toList();
+    // Client-side filter by league + date — 缓存防止每帧重算
+    final ck = _currentCacheKey;
+    if (_cachedVisible == null || _cacheKey != ck) {
+      Iterable<MatchInfo> it = _matches;
+      if (_league != null) it = it.where((m) => m.leagueSlug == _league);
+      if (_tab == _Tab.schedule || _tab == _Tab.results) {
+        final sd = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+        it = it.where((m) {
+          final md = DateTime(m.date.year, m.date.month, m.date.day);
+          return md == sd;
+        });
+      }
+      _cachedVisible = _sortMatches(it.toList(growable: false));
+      _cacheKey = ck;
     }
-
-    // Sort (no league grouping — league name shown per row)
-    final sorted = _sortMatches(visible);
-    final showEmpty = visible.isEmpty && !_loading;
+    final sorted = _cachedVisible!;
+    final showEmpty = sorted.isEmpty && !_loading;
 
     return Container(
       color: Colors.white,
@@ -269,7 +259,8 @@ class _MatchListPageState extends State<MatchListPage>
         child: ListView.builder(
           controller: _scrollCtrl,
           padding: EdgeInsets.zero,
-          itemCount: _headerCount + sorted.length + (showEmpty ? 1 : 0) + (_loading ? 1 : 0) + (!_hasMore && visible.isNotEmpty ? 1 : 0),
+          addAutomaticKeepAlives: false,
+          itemCount: _headerCount + sorted.length + (showEmpty ? 1 : 0) + (_loading ? 1 : 0) + (!_hasMore && sorted.isNotEmpty ? 1 : 0),
           itemBuilder: (context, index) {
             // Header items
             if (index == 0) return _searching ? _searchBar() : _tabBar();
@@ -298,7 +289,7 @@ class _MatchListPageState extends State<MatchListPage>
                         color: T.brandDeep, strokeWidth: 2)),
               );
             }
-            if (!_hasMore && visible.isNotEmpty) {
+            if (!_hasMore && sorted.isNotEmpty) {
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: Center(
@@ -444,7 +435,7 @@ class _MatchListPageState extends State<MatchListPage>
   Widget _datePicker() {
     final today = DateTime.now();
     final todayDay = DateTime(today.year, today.month, today.day);
-    final fmt = DateFormat('MM/dd');
+    final fmt = _fmtMD;
 
     return Container(
       color: Colors.white,
@@ -677,13 +668,9 @@ class _MatchListPageState extends State<MatchListPage>
   // ── Match row (compact, 懂球帝 style) ──────────────────
 
   Widget _matchRow(MatchInfo m) {
-    final fmt = DateFormat('HH:mm');
+    final fmt = _fmtHM;
     // Stream URL: 7t666 feed (joined by Chinese team name) takes precedence;
     // upstream-stamped LiveDetail.streamUrl is the fallback.
-    final feedStream = StreamFeed.instance.find(m.home, m.away, m.date);
-    final streamUrl =
-        feedStream?.streamUrl ?? m.live?.streamUrl ?? '';
-    final hasStream = streamUrl.isNotEmpty;
 
     final body = GestureDetector(
       onTap: () => AntiSpam.guard('match_detail_${m.id}', () {
@@ -698,7 +685,7 @@ class _MatchListPageState extends State<MatchListPage>
         color: Colors.white,
         // Reserve left padding when ribbon is shown so it can dock at left=0
         // edge without overlapping the row content.
-        padding: EdgeInsets.fromLTRB(hasStream ? 28 : 12, 8, 8, 10),
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 10),
         child: Column(
           children: [
             Stack(
@@ -716,7 +703,7 @@ class _MatchListPageState extends State<MatchListPage>
                             children: [
                               Flexible(
                                 child: Text(
-                                  localizedTeam(m.home),
+                                  localizedTeam(m.home, apiZh: m.homeZh),
                                   textAlign: TextAlign.right,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -750,7 +737,7 @@ class _MatchListPageState extends State<MatchListPage>
                               const SizedBox(width: 6),
                               Flexible(
                                 child: Text(
-                                  localizedTeam(m.away),
+                                  localizedTeam(m.away, apiZh: m.awayZh),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -786,73 +773,7 @@ class _MatchListPageState extends State<MatchListPage>
       ),
     );
 
-    if (!hasStream) return body;
-
-    // Stack the row + a left-docked vertical ribbon. The asset is a
-    // 70×227 banner with "体育直播 LIVE" text reading top-down — render at
-    // the original aspect ratio (≈1:3.24) docked to the left edge so it
-    // looks like a tab protruding from the row, mirroring the "懂球帝-style"
-    // floating-tag pattern. The list row's left padding (set to 44px above
-    // when hasStream is true) keeps content from overlapping.
-    return Stack(
-      children: [
-        body,
-        Positioned(
-          left: 0,
-          top: 6,
-          bottom: 6,
-          child: _liveStreamRibbon(streamUrl, m),
-        ),
-      ],
-    );
-  }
-
-  Widget _liveStreamRibbon(String url, MatchInfo m) {
-    return GestureDetector(
-      onTap: () => _openStream(url,
-          home: localizedTeam(m.home), away: localizedTeam(m.away)),
-      child: Container(
-        // Ribbon stays narrow (≈ row height × 0.31) so it reads as a tab,
-        // not a card. The image's intrinsic 70×227 will scale uniformly.
-        width: 22,
-        decoration: BoxDecoration(
-          borderRadius: const BorderRadius.only(
-            topRight: Radius.circular(4),
-            bottomRight: Radius.circular(4),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.18),
-              blurRadius: 4,
-              offset: const Offset(1, 2),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: const BorderRadius.only(
-            topRight: Radius.circular(4),
-            bottomRight: Radius.circular(4),
-          ),
-          child: Image.asset(
-            'assets/icons/live_stream.png',
-            fit: BoxFit.fill, // stretch to fill ribbon height; matches design
-            errorBuilder: (_, __, ___) => Container(
-              alignment: Alignment.center,
-              color: const Color(0xFFE53935),
-              child: const RotatedBox(
-                quarterTurns: 1,
-                child: Text('LIVE',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1)),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    return KeyedSubtree(key: ValueKey(m.id), child: body);
   }
 
   /// Header strip above the team row.
@@ -1030,7 +951,7 @@ class _MatchListPageState extends State<MatchListPage>
     if (scores != null) {
       return Center(
         child: Text(
-          '${scores.home} - ${scores.away}',
+          '${scores.home}-${scores.away}',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,

@@ -76,8 +76,14 @@ class _DepositPageState extends State<DepositPage> {
   Future<void> _submit() async {
     final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0;
     final hash = _hashCtrl.text.trim();
-    if (amt <= 0) {
-      setState(() => _error = tr('dep.amount_invalid'));
+    final minD = _wallet?.minDeposit ?? 10;
+    final maxD = _wallet?.maxDeposit ?? 1000000;
+    if (amt < minD) {
+      setState(() => _error = '${tr('dep.amount_invalid')} (min ${minD.toStringAsFixed(0)})');
+      return;
+    }
+    if (amt > maxD) {
+      setState(() => _error = '${tr('dep.amount_invalid')} (max ${maxD.toStringAsFixed(0)})');
       return;
     }
     if (hash.length < 10) {
@@ -90,7 +96,7 @@ class _DepositPageState extends State<DepositPage> {
       _ok = null;
     });
     try {
-      final d = await widget.state.api.submitDeposit(
+      await widget.state.api.submitDeposit(
         amount: amt,
         txHash: hash,
         proofUrl: _proofUrl,
@@ -103,7 +109,7 @@ class _DepositPageState extends State<DepositPage> {
           _proofUrl = '';
           _ok = null;
         });
-        await _showDepositSuccessDialog(d.id, amt);
+        await _showDepositSuccessDialog(amt);
       }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -115,7 +121,7 @@ class _DepositPageState extends State<DepositPage> {
   /// Success popup — shown after a deposit POST returns 200. We deliberately
   /// don't auto-dismiss: the user should consciously close it so they remember
   /// the deposit is "submitted, awaiting admin review" (not "已到账").
-  Future<void> _showDepositSuccessDialog(int id, double amount) async {
+  Future<void> _showDepositSuccessDialog(double amount) async {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
@@ -136,18 +142,17 @@ class _DepositPageState extends State<DepositPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('${amount.toStringAsFixed(2)} USDT',
+            Text('${amount.toStringAsFixed(_chain == 'trc20' ? 2 : 8)} ${_chain == 'eth' ? 'ETH' : _chain == 'btc' ? 'BTC' : 'USDT'}',
                 style: const TextStyle(
                     fontSize: 22, fontWeight: FontWeight.w800, color: T.brandDeep)),
-            const SizedBox(height: 6),
-            Text('#$id',
-                style: const TextStyle(
-                    fontSize: 12, color: T.inkLo, fontFamily: T.fontMono)),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Navigator.of(context).pop(true);
+            },
             child: Text(tr('common.confirm')),
           ),
         ],
@@ -249,10 +254,12 @@ class _DepositPageState extends State<DepositPage> {
       );
 
   Widget _chainPicker() {
-    final chains = [
+    final chains = <_Chain>[
       _Chain('trc20', tr('dep.chain_trc20'), tr('dep.chain_trc20_note')),
-      _Chain('eth', tr('dep.chain_eth'), tr('dep.chain_eth_note')),
-      _Chain('btc', tr('dep.chain_btc'), tr('dep.chain_btc_note')),
+      if (_wallet != null && _wallet!.ethDepositAddress.isNotEmpty)
+        _Chain('eth', tr('dep.chain_eth'), tr('dep.chain_eth_note')),
+      if (_wallet != null && _wallet!.btcDepositAddress.isNotEmpty)
+        _Chain('btc', tr('dep.chain_btc'), tr('dep.chain_btc_note')),
     ];
     return Column(
       children: chains.map((c) {

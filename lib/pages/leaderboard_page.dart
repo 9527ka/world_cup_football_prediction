@@ -18,18 +18,21 @@ class LeaderboardPage extends StatefulWidget {
 }
 
 class _LeaderboardPageState extends State<LeaderboardPage> {
+  static final _fmtBal = NumberFormat('#,##0.00');
+  static final _fmtInt = NumberFormat('#,##0');
+
   String _period = 'week';
   late Future<_LBBundle> _future;
   String _lastLocale = '';
+
+  // Per-period cache: only cleared on pull-to-refresh or app restart.
+  final Map<String, _LBBundle> _cache = {};
 
   @override
   void initState() {
     super.initState();
     _lastLocale = I18n.instance.locale;
     _future = _load();
-    // 切语言时(zh ↔ 其它)后端会换虚拟池子 / 重新 seed,我们必须重拉一次。
-    // 单纯 root tree rebuild(MaterialApp 包的 AnimatedBuilder)只会重 build,
-    // 不会让 FutureBuilder 重新 future-= _load()。
     I18n.instance.addListener(_onLocaleChanged);
   }
 
@@ -44,31 +47,32 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
     if (cur == _lastLocale) return;
     _lastLocale = cur;
     if (!mounted) return;
+    _cache.clear();
     setState(() => _future = _load());
   }
 
-  Future<_LBBundle> _load() async {
+  Future<_LBBundle> _load({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cache.containsKey(_period)) {
+      return _cache[_period]!;
+    }
     final api = widget.state.api;
-    // 公共榜单 + home config 是核心数据,必须成功。
-    // 透传当前 locale:仅参与 seed(让中英子集略不同),池子是 60 名 CN+EN 混合(2026-05-18 起)。
-    // 限 10 名:用户需求"只显示前 10",免堆叠太多虚拟玩家。
     final results = await Future.wait([
-      api.leaderboard(limit: 10, period: _period, locale: I18n.instance.locale),
+      api.leaderboard(limit: 10, period: _period),
       api.homeConfig(),
     ]);
-    // 我的排名是装饰性数据 — 401(token 过期)/网络失败时降级为 null,
-    // 不能让它把整页拖崩(看公共榜单不需要登录)。
     MyRank? myRank;
     if (widget.state.isAuthenticated) {
       try {
         myRank = await api.myRank(period: _period);
-      } catch (_) {/* silently skip "我的排名" section */}
+      } catch (_) {}
     }
-    return _LBBundle(
+    final bundle = _LBBundle(
       list: results[0] as List<LeaderboardEntry>,
       config: results[1] as HomeConfig,
       myRank: myRank,
     );
+    _cache[_period] = bundle;
+    return bundle;
   }
 
   void _switch(String p) {
@@ -111,7 +115,8 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
               return RefreshIndicator(
                 color: T.brandDeep,
                 onRefresh: () async {
-                  setState(() => _future = _load());
+                  _cache.clear();
+                  setState(() => _future = _load(forceRefresh: true));
                   await _future;
                 },
                 child: ListView(
@@ -120,6 +125,14 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     _topBar(),
                     _rewardBanner(bundle.config.weeklyPool),
                     _periodTabs(),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                      child: Text(
+                        _period == 'week' ? tr('lb.update_week') : tr('lb.update_month'),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 10, color: T.inkLo),
+                      ),
+                    ),
                     if (top3.isEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 40),
@@ -173,7 +186,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 
   Widget _rewardBanner(double weeklyPool) {
     if (weeklyPool <= 0) return const SizedBox.shrink();
-    final formatted = NumberFormat('#,##0').format(weeklyPool);
+    final formatted = _fmtInt.format(weeklyPool);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
       child: Container(
@@ -232,7 +245,6 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
     final opts = [
       ['week', tr('lb.tab_week')],
       ['month', tr('lb.tab_month')],
-      ['all', tr('lb.tab_all')],
     ];
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -314,32 +326,55 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
     );
   }
 
+  Widget _avatarCircle(LeaderboardEntry u, double size, {List<Color>? gradient}) {
+    final hasPhoto = u.photoUrl.isNotEmpty && u.userId > 0;
+    if (hasPhoto) {
+      return ClipOval(
+        child: Image.network(u.photoUrl,
+          width: size, height: size, fit: BoxFit.cover,
+          // 2x for retina,但仍避免按原图(可能 512px)解码占内存
+          cacheWidth: (size * 2).toInt(), cacheHeight: (size * 2).toInt(),
+          errorBuilder: (_, __, ___) => _fallbackAvatar(u, size, gradient: gradient)),
+      );
+    }
+    return _fallbackAvatar(u, size, gradient: gradient);
+  }
+
+  Widget _fallbackAvatar(LeaderboardEntry u, double size, {List<Color>? gradient}) {
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(colors: gradient ?? const [Color(0xFFC5CFDB), Color(0xFF8B95A5)]),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        u.displayName.isEmpty ? '?' : u.displayName.characters.first.toUpperCase(),
+        style: TextStyle(color: Colors.white, fontSize: size * 0.42, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+
+  Widget _podiumAvatar(LeaderboardEntry u, int rank, _PodiumCfg cfg) {
+    final size = rank == 1 ? 56.0 : 46.0;
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 3),
+        boxShadow: [
+          BoxShadow(color: cfg.c2.withValues(alpha: 0.4), blurRadius: 12, offset: const Offset(0, 4))
+        ],
+      ),
+      child: ClipOval(child: _avatarCircle(u, size, gradient: [cfg.c1, cfg.c2])),
+    );
+  }
+
   Widget _podiumCol(LeaderboardEntry u, {required int rank, required double height}) {
     final cfg = _podiumColors(rank);
     return Column(
       children: [
-        Container(
-          width: rank == 1 ? 56 : 46, height: rank == 1 ? 56 : 46,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: [cfg.c1, cfg.c2],
-            ),
-            border: Border.all(color: Colors.white, width: 3),
-            boxShadow: [
-              BoxShadow(color: cfg.c2.withValues(alpha: 0.4), blurRadius: 12, offset: const Offset(0, 4))
-            ],
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            u.displayName.isEmpty ? '?' : u.displayName.characters.first,
-            style: TextStyle(
-                color: Colors.white,
-                fontSize: rank == 1 ? 22 : 18,
-                fontWeight: FontWeight.w800),
-          ),
-        ),
+        _podiumAvatar(u, rank, cfg),
         const SizedBox(height: 8),
         Text(
           u.displayName,
@@ -349,7 +384,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
               fontSize: 11, fontWeight: FontWeight.w800, color: T.ink),
         ),
         const SizedBox(height: 2),
-        Text('${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0.00').format(u.payout)} U',
+        Text('${u.payout >= 0 ? '+' : ''}${_fmtBal.format(u.payout)}',
             style: TextStyle(
                 fontSize: rank == 1 ? 14 : 12,
                 fontWeight: FontWeight.w800,
@@ -427,8 +462,8 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                         fontSize: 12, fontWeight: FontWeight.w700, color: T.ink)),
                 Text(
                   r.profit >= 0
-                      ? tr('lb.my_profit_pos').replaceAll('{n}', NumberFormat('#,##0.00').format(r.profit))
-                      : tr('lb.my_profit_neg').replaceAll('{n}', NumberFormat('#,##0.00').format(r.profit)),
+                      ? tr('lb.my_profit_pos').replaceAll('{n}', _fmtBal.format(r.profit))
+                      : tr('lb.my_profit_neg').replaceAll('{n}', _fmtBal.format(r.profit)),
                   style: const TextStyle(
                       fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600),
                 ),
@@ -460,49 +495,20 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     color: T.inkLo,
                     fontFamily: T.fontMono)),
           ),
-          Container(
-            width: 30, height: 30,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFFC5CFDB), T.inkLo],
-              ),
-              shape: BoxShape.circle,
-            ),
-            alignment: Alignment.center,
-            child: Text(u.displayName.characters.first.toUpperCase(),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800)),
-          ),
+          _avatarCircle(u, 30, gradient: const [Color(0xFFC5CFDB), Color(0xFF8B95A5)]),
           const SizedBox(width: 10),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(u.displayName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13, color: T.ink, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 2),
-                Text(
-                  tr('lb.row_settled')
-                      .replaceAll('{total}', '${u.total}')
-                      .replaceAll('{wins}', '${u.wins}'),
-                  style: const TextStyle(
-                      fontSize: 10,
-                      color: T.inkLo,
-                      fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
+            child: Text(u.displayName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 13, color: T.ink, fontWeight: FontWeight.w700)),
           ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                '${u.payout >= 0 ? '+' : ''}${NumberFormat('#,##0.00').format(u.payout)}',
+                '${u.payout >= 0 ? '+' : ''}${_fmtBal.format(u.payout)}',
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w800,

@@ -3,6 +3,26 @@ import 'package:flutter/material.dart';
 import '../services/i18n.dart';
 import '../theme/tokens.dart';
 
+/// Native language names — shared by all language pickers.
+const nativeLanguageNames = {
+  'zh': '简体中文',
+  'en': 'English',
+  'ru': 'Русский',
+  'es': 'Español',
+  'ar': 'العربية',
+  'fa': 'فارسی',
+  'hi': 'हिन्दी',
+  'id': 'Bahasa Indonesia',
+  'ja': '日本語',
+  'ko': '한국어',
+  'pt': 'Português',
+  'tr': 'Türkçe',
+  'vi': 'Tiếng Việt',
+  'fr': 'Français',
+  'de': 'Deutsch',
+  'it': 'Italiano',
+};
+
 /// Reusable bottom-sheet language picker.
 ///
 /// Mutates [I18n.instance] and closes itself. Anyone listening to I18n's
@@ -44,13 +64,13 @@ Future<void> showLanguagePicker(BuildContext context) {
                       _langTile(
                         ctx,
                         label:
-                            '${tr('profile.language_auto')} · ${tr('profile.language_${I18n.instance.detectedLocale}')}',
+                            'Auto · ${nativeLanguageNames[I18n.instance.detectedLocale] ?? I18n.instance.detectedLocale}',
                         code: null,
                       ),
                       const Divider(height: 1, color: T.border),
                       for (final code in I18n.supported)
                         _langTile(ctx,
-                            label: tr('profile.language_$code'), code: code),
+                            label: nativeLanguageNames[code] ?? code, code: code),
                     ],
                   ),
                 ),
@@ -72,9 +92,9 @@ Widget _langTile(BuildContext ctx,
   return InkWell(
     onTap: () async {
       if (code == null) {
-        await I18n.instance.resetToAuto();
+        I18n.instance.resetToAuto();
       } else {
-        await I18n.instance.setLocale(code);
+        I18n.instance.setLocale(code);
       }
       if (ctx.mounted) Navigator.pop(ctx);
     },

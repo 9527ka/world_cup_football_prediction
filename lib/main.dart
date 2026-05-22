@@ -54,7 +54,7 @@ Future<void> main() async {
   // 其余 API 往返(登录 / matches / team overrides)放到 runApp 之后异步跑,
   // 否则 Telegram WebView 冷启动会在 splash 阶段堵 1-3 个 RTT,首页文字迟迟不显示。
   // AppState / TeamOverrides 都是 ChangeNotifier,数据回来会自动触发 listener 刷 UI。
-  await I18n.instance.initialize();
+  I18n.instance.initialize();
   final api = ApiClient(_resolveApiBase());
   final stream = OddsStream(_resolveWsBase());
   final state = AppState(api: api, stream: stream);
@@ -64,7 +64,7 @@ Future<void> main() async {
   // 浏览器 OAuth 回跳:URL 上带 ?tg_token=... 时把 token 写入 ApiClient + 清 URL。
   // 必须**在** state.initialize() 之前完成,否则 initialize 会因为 token 已存在
   // 跳过浏览器登录路径,但又因为 api.token 还没设而当未登录。
-  unawaited(consumeIncomingToken(state).then((_) => state.initialize()));
+  unawaited(consumeIncomingToken(state).catchError((_) => null).then((_) => state.initialize()));
   runApp(CupApp(state: state));
   unawaited(TeamOverrides.instance.load(api));
 }
@@ -83,6 +83,15 @@ class CupApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: T.lightTheme(),
         scrollBehavior: const _AppScrollBehavior(),
+        builder: (context, child) => Container(
+          color: const Color(0xFF0A0E1A),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: child,
+            ),
+          ),
+        ),
         home: MainShell(state: state),
       ),
     );

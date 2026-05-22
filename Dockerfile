@@ -6,8 +6,10 @@ WORKDIR /src
 COPY pubspec.yaml ./
 RUN flutter pub get
 COPY . .
-ARG API_BASE=https://cup-admin.douwen.me
-ARG WS_BASE=wss://cup-admin.douwen.me/ws
+# 空字符串 → 前端 fallback 到 Uri.base.origin (同源),
+# 浏览器从 tgfootball.me 加载就调 tgfootball.me/api,不会硬绑旧域名。
+ARG API_BASE=
+ARG WS_BASE=
 # Hard build-time gate: any i18n.dart violation (missing key, placeholder
 # mismatch, escape pollution, broken map structure) aborts the build before
 # a single byte of broken Dart can ship. See scripts/i18n_invariants.py for
@@ -19,7 +21,7 @@ RUN if [ "$SKIP_I18N_CHECK" = "1" ]; then \
     else \
       python3 scripts/i18n_invariants.py; \
     fi
-RUN flutter build web --release --no-tree-shake-icons \
+RUN flutter build web --release --web-renderer html \
       --dart-define=API_BASE=${API_BASE} \
       --dart-define=WS_BASE=${WS_BASE}
 

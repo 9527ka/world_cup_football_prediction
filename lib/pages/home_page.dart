@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -8,7 +6,6 @@ import 'package:intl/intl.dart';
 import '../models/match.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
-import '../services/stream_feed.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../utils/league_flags.dart';
@@ -17,9 +14,9 @@ import '../utils/team_names.dart';
 import '../widgets/chain_icon.dart';
 import '../widgets/language_picker.dart';
 import '../widgets/light_card.dart';
-import 'feature_pages.dart';
+import 'feature_pages.dart' deferred as feat;
 import 'match_detail_page.dart';
-import 'recent_settled_page.dart';
+import 'recent_settled_page.dart' deferred as settled;
 
 /// 01 · 首页 — 浅色 7t 气质,USDT 余额 + Hero + 跑马灯 + 5 圆形入口
 /// + 唯一玩法(足球波胆)+ 热门赛事 + 合规牌照。
@@ -33,9 +30,10 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  static final _balFmt = NumberFormat('#,##0.00');
+  static final _dateFmt = DateFormat('MM-dd HH:mm');
+
   List<String> _announcements = const [];
-  int _marqueeIdx = 0;
-  Timer? _marqueeTimer;
   List<HotMatch> _hot = const [];
   List<MatchInfo> _settled = const [];
   UserStats? _stats;
@@ -44,29 +42,11 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _load();
-    _loadStreamFeed();
     widget.state.addListener(_onState);
-  }
-
-  Future<void> _loadStreamFeed() async {
-    await StreamFeed.instance.ensure(widget.state.api);
-    if (mounted) setState(() {}); // re-render hot cards so live ribbon shows
-  }
-
-  void _openStream(String url, String home, String away) {
-    try {
-      globalContext.callMethod(
-        'openLiveStream'.toJS,
-        url.toJS,
-        home.toJS,
-        away.toJS,
-      );
-    } catch (_) {}
   }
 
   @override
   void dispose() {
-    _marqueeTimer?.cancel();
     widget.state.removeListener(_onState);
     super.dispose();
   }
@@ -88,25 +68,14 @@ class _HomePageState extends State<HomePage> {
         _settled = results[2] as List<MatchInfo>;
         if (widget.state.isAuthenticated) _stats = results[3] as UserStats;
       });
-      if (_announcements.isNotEmpty) {
-        _marqueeTimer?.cancel();
-        _marqueeTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-          if (!mounted) return;
-          setState(() => _marqueeIdx = (_marqueeIdx + 1) % _announcements.length);
-        });
-      }
-    } catch (_) {/* show defaults silently */}
+      // marquee timer is managed by _MarqueeWidget itself
+    } catch (_) {
+      // silently ignore — backend alerts via TG bot
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // 取第一个 live stream(用作首页左侧悬浮直播按钮的目标)
-    // 优先 status==1(正在直播);没有则降级到任意有 streamUrl 的缓存流。
-    final liveStreams = StreamFeed.instance.liveSnapshot();
-    final candidates =
-        liveStreams.isNotEmpty ? liveStreams : StreamFeed.instance.snapshot();
-    final firstLive = candidates.isEmpty ? null : candidates.first;
-
     final scrollable = RefreshIndicator(
       onRefresh: _load,
       color: T.brandDeep,
@@ -117,7 +86,7 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 6),
           _heroBanner(),
           const SizedBox(height: 12),
-          _marquee(),
+          _MarqueeWidget(items: _announcements),
           const SizedBox(height: 16),
           _roundEntries(),
           const SizedBox(height: 8),
@@ -140,11 +109,13 @@ class _HomePageState extends State<HomePage> {
               trailing: InkWell(
                 borderRadius: BorderRadius.circular(8),
                 onTap: () => AntiSpam.guard('nav_settled', () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => RecentSettledPage(state: widget.state)),
-                  );
+                  settled.loadLibrary().then((_) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => settled.RecentSettledPage(state: widget.state)),
+                    );
+                  });
                 }),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
@@ -167,64 +138,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
 
-    // No live stream cached → no floating button needed.
-    if (firstLive == null) return scrollable;
-
-    // Stack the scrollable with a left-edge floating live ribbon.
-    // Tap → open the FIRST live stream (per upstream homeList order).
-    return Stack(
-      children: [
-        scrollable,
-        Positioned(
-          left: 0,
-          top: 200, // below hero banner
-          child: GestureDetector(
-            onTap: () => _openStream(
-                firstLive.streamUrl, firstLive.homeTeam, firstLive.awayTeam),
-            child: Container(
-              width: 26,
-              height: 88,
-              decoration: BoxDecoration(
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(6),
-                  bottomRight: Radius.circular(6),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.20),
-                    blurRadius: 6,
-                    offset: const Offset(2, 3),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(6),
-                  bottomRight: Radius.circular(6),
-                ),
-                child: Image.asset(
-                  'assets/icons/live_stream.png',
-                  fit: BoxFit.fill,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: const Color(0xFFE53935),
-                    alignment: Alignment.center,
-                    child: const RotatedBox(
-                      quarterTurns: 1,
-                      child: Text('LIVE',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 1)),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+    return scrollable;
   }
 
   // ── top bar ───────────────────────────────────────────────────────
@@ -300,22 +214,7 @@ class _HomePageState extends State<HomePage> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 22, height: 22,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
-                  colors: [Color(0xFF50C878), Color(0xFF1A9D5C)],
-                ),
-              ),
-              alignment: Alignment.center,
-              child: const Text('₮',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12)),
-            ),
+            const ChainIcon(chain: 'trc20', size: 22),
             const SizedBox(width: 8),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -323,7 +222,7 @@ class _HomePageState extends State<HomePage> {
                 Text(tr('home.usdt_balance'),
                     style: const TextStyle(fontSize: 9, color: T.inkLo, letterSpacing: 0.4)),
                 Text(
-                  NumberFormat('#,##0.00').format(bal),
+                  _balFmt.format(bal),
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
@@ -443,42 +342,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ── marquee ────────────────────────────────────────────────────────
-  Widget _marquee() {
-    final items = _announcements.isEmpty
-        ? [tr('home.no_announce')]
-        : _announcements;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: LightCard(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        radius: 12,
-        child: Row(
-          children: [
-            const Icon(Icons.notifications_outlined, color: T.brandDeep, size: 20),
-            const SizedBox(width: 10),
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 400),
-                transitionBuilder: (child, anim) => SlideTransition(
-                  position: Tween<Offset>(
-                          begin: const Offset(0, 1), end: Offset.zero)
-                      .animate(anim),
-                  child: child,
-                ),
-                child: Text(
-                  items[_marqueeIdx % items.length],
-                  key: ValueKey(_marqueeIdx),
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 12, color: T.inkMd, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  // Marquee extracted to _MarqueeWidget (below) to isolate its 3s timer rebuild.
 
   // ── round entries ─────────────────────────────────────────────────
   Widget _roundEntries() {
@@ -504,24 +368,26 @@ class _HomePageState extends State<HomePage> {
       showLanguagePicker(context);
       return;
     }
-    Widget? page;
-    switch (key) {
-      case 'home.share_earn':
-        page = ShareEarnPage(state: widget.state);
-        break;
-      case 'home.rebate':
-        page = const RebatePage();
-        break;
-      case 'home.vip':
-        page = VipPage(state: widget.state);
-        break;
-      case 'home.service':
-        page = CustomerServicePage(state: widget.state);
-        break;
-    }
-    if (page != null) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => page!));
-    }
+    feat.loadLibrary().then((_) {
+      Widget? page;
+      switch (key) {
+        case 'home.share_earn':
+          page = feat.ShareEarnPage(state: widget.state);
+          break;
+        case 'home.rebate':
+          page = feat.RebatePage(state: widget.state);
+          break;
+        case 'home.vip':
+          page = feat.VipPage(state: widget.state);
+          break;
+        case 'home.service':
+          page = feat.CustomerServicePage(state: widget.state);
+          break;
+      }
+      if (page != null) {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => page!));
+      }
+    });
   }
 
   Widget _roundEntry(_RoundSpec s) {
@@ -535,12 +401,12 @@ class _HomePageState extends State<HomePage> {
               clipBehavior: Clip.none,
               children: [
                 SizedBox(
-                  width: 52, height: 52,
+                  width: 42, height: 42,
                   child: Center(
                     child: Image.asset(
                       s.asset,
-                      width: 48,
-                      height: 48,
+                      width: 38,
+                      height: 38,
                       fit: BoxFit.contain,
                       errorBuilder: (_, __, ___) =>
                           const Icon(Icons.help_outline, color: T.brandDeep, size: 24),
@@ -697,7 +563,7 @@ class _HomePageState extends State<HomePage> {
 
   // ── 已结束比赛卡片(只显示比分 + 比赛日 + 联赛)────────────────────────────
   Widget _settledCard(MatchInfo m) {
-    final fmt = DateFormat('MM-dd HH:mm');
+    final fmt = _dateFmt;
     final sc = m.scores;
     final hg = sc?.home ?? 0;
     final ag = sc?.away ?? 0;
@@ -738,7 +604,7 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(width: 8),
             // 主队
             Expanded(
-              child: Text(localizedTeam(m.home),
+              child: Text(localizedTeam(m.home, apiZh: m.homeZh),
                   textAlign: TextAlign.right,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -764,7 +630,7 @@ class _HomePageState extends State<HomePage> {
             ),
             // 客队
             Expanded(
-              child: Text(localizedTeam(m.away),
+              child: Text(localizedTeam(m.away, apiZh: m.awayZh),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -782,11 +648,7 @@ class _HomePageState extends State<HomePage> {
   Widget _hotCard(HotMatch hm) {
     final m = hm.match;
     final live = m.isLive;
-    final fmt = DateFormat('MM-dd HH:mm');
-    final feed = StreamFeed.instance.find(m.home, m.away, m.date);
-    final streamUrl = feed?.streamUrl ?? m.live?.streamUrl ?? '';
-    final hasStream = streamUrl.isNotEmpty;
-
+    final fmt = _dateFmt;
     final card = Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
       child: LightCard(
@@ -823,18 +685,11 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 const Spacer(),
-                if (live)
-                  _LiveBadge(
-                    minute: m.scores == null
-                        ? 'LIVE'
-                        : 'LIVE',
-                  )
-                else
-                  Text(fmt.format(m.date),
-                      style: const TextStyle(
-                          fontSize: 11,
-                          color: T.brandDeep,
-                          fontWeight: FontWeight.w600)),
+                Text(fmt.format(m.date),
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: T.brandDeep,
+                        fontWeight: FontWeight.w600)),
               ],
             ),
             const SizedBox(height: 10),
@@ -843,7 +698,7 @@ class _HomePageState extends State<HomePage> {
                 TeamCrest(name: m.home, id: m.homeId, leagueSlug: m.leagueSlug, size: 28),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(localizedTeam(m.home),
+                  child: Text(localizedTeam(m.home, apiZh: m.homeZh),
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           fontSize: 13,
@@ -864,7 +719,7 @@ class _HomePageState extends State<HomePage> {
                           fontWeight: FontWeight.w600,
                           color: T.inkLo)),
                 Expanded(
-                  child: Text(localizedTeam(m.away),
+                  child: Text(localizedTeam(m.away, apiZh: m.awayZh),
                       textAlign: TextAlign.right,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -950,64 +805,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
 
-    if (!hasStream) return card;
-    // Overlay a left-side floating live ribbon (same asset/spec as match list).
-    // Stack ensures the ribbon docks over the card edge without disturbing
-    // the card's internal padding.
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        card,
-        Positioned(
-          left: 14, // matches LightCard outer padding so ribbon hugs card edge
-          top: 6,
-          bottom: 16,
-          width: 22,
-          child: GestureDetector(
-            onTap: () => _openStream(
-                streamUrl, localizedTeam(m.home), localizedTeam(m.away)),
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(4),
-                  bottomRight: Radius.circular(4),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.18),
-                    blurRadius: 4,
-                    offset: const Offset(1, 2),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(4),
-                  bottomRight: Radius.circular(4),
-                ),
-                child: Image.asset(
-                  'assets/icons/live_stream.png',
-                  fit: BoxFit.fill,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: const Color(0xFFE53935),
-                    alignment: Alignment.center,
-                    child: const RotatedBox(
-                      quarterTurns: 1,
-                      child: Text('LIVE',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 1)),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+    return card;
   }
 
   // ── coins / footer ────────────────────────────────────────────────
@@ -1083,29 +881,91 @@ class _RoundSpec {
   const _RoundSpec(this.label, this.asset, {this.badge});
 }
 
-class _LiveBadge extends StatelessWidget {
-  const _LiveBadge({required this.minute});
-  final String minute;
+class _MarqueeWidget extends StatefulWidget {
+  const _MarqueeWidget({required this.items});
+  final List<String> items;
+
+  @override
+  State<_MarqueeWidget> createState() => _MarqueeWidgetState();
+}
+
+class _MarqueeWidgetState extends State<_MarqueeWidget> {
+  int _idx = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(_MarqueeWidget old) {
+    super.didUpdateWidget(old);
+    if (widget.items.length != old.items.length) {
+      _idx = 0;
+      _startTimer();
+    }
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    if (widget.items.length > 1) {
+      _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (mounted) setState(() => _idx = (_idx + 1) % widget.items.length);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      height: 18,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-          colors: [Color(0xFFF4493B), T.down],
+    final items = widget.items.isEmpty ? [tr('home.no_announce')] : widget.items;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: LightCard(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        radius: 12,
+        child: Row(
+          children: [
+            const Icon(Icons.notifications_outlined, color: T.brandDeep, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: ClipRect(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 500),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, anim) {
+                    final isIncoming = child.key == ValueKey(_idx);
+                    final offset = Tween<Offset>(
+                      begin: Offset(0, isIncoming ? 0.8 : -0.8),
+                      end: Offset.zero,
+                    ).animate(anim);
+                    return SlideTransition(
+                      position: offset,
+                      child: FadeTransition(opacity: anim, child: child),
+                    );
+                  },
+                  child: Text(
+                    items[_idx % items.length],
+                    key: ValueKey(_idx),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, color: T.inkMd, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
-        borderRadius: BorderRadius.circular(6),
       ),
-      alignment: Alignment.center,
-      child: Text(minute,
-          style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.4)),
     );
   }
 }
+

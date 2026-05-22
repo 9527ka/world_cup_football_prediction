@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/match.dart';
 import 'i18n.dart';
 
+const _httpTimeout = Duration(seconds: 15);
+
 /// 生成一个 32 字符 hex 的幂等 key(等同 UUID v4 但去掉分隔符)。
 /// 安全性来自 Random.secure(),冲突概率 1/2^128 ≈ 0。后端只要 16~128 字符。
 String _generateIdempotencyKey() {
@@ -79,18 +81,29 @@ class ApiClient {
   Uri _uri(String path, [Map<String, String>? q]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: q);
 
-  bool _refreshing = false;
+  Completer<void>? _refreshCompleter;
+
+  Future<void> _ensureTokenRefreshed() async {
+    if (_refreshCompleter != null) {
+      await _refreshCompleter!.future;
+      return;
+    }
+    _refreshCompleter = Completer<void>();
+    try {
+      await onTokenExpired!();
+      _refreshCompleter!.complete();
+    } catch (e) {
+      _refreshCompleter!.completeError(e);
+    } finally {
+      _refreshCompleter = null;
+    }
+  }
 
   Future<http.Response> _authGet(Uri uri) async {
-    var r = await http.get(uri, headers: _headers(auth: true));
-    if (r.statusCode == 401 && onTokenExpired != null && !_refreshing) {
-      _refreshing = true;
-      try {
-        await onTokenExpired!();
-      } finally {
-        _refreshing = false;
-      }
-      r = await http.get(uri, headers: _headers(auth: true));
+    var r = await http.get(uri, headers: _headers(auth: true)).timeout(_httpTimeout);
+    if (r.statusCode == 401 && onTokenExpired != null) {
+      await _ensureTokenRefreshed();
+      r = await http.get(uri, headers: _headers(auth: true)).timeout(_httpTimeout);
     }
     return r;
   }
@@ -98,33 +111,21 @@ class ApiClient {
   Future<http.Response> _authPost(Uri uri, {Object? body, Map<String, String>? extraHeaders}) async {
     final h = _headers(auth: true);
     if (extraHeaders != null) h.addAll(extraHeaders);
-    var r = await http.post(uri, headers: h, body: body);
-    if (r.statusCode == 401 && onTokenExpired != null && !_refreshing) {
-      _refreshing = true;
-      try {
-        await onTokenExpired!();
-      } finally {
-        _refreshing = false;
-      }
-      // 401 自动刷 token 后重试 —— 这里复用 extraHeaders(包括 Idempotency-Key),
-      // 后端看到同 key 第二次仍会走 cache 命中分支,不会真的重复下单。
+    var r = await http.post(uri, headers: h, body: body).timeout(_httpTimeout);
+    if (r.statusCode == 401 && onTokenExpired != null) {
+      await _ensureTokenRefreshed();
       final h2 = _headers(auth: true);
       if (extraHeaders != null) h2.addAll(extraHeaders);
-      r = await http.post(uri, headers: h2, body: body);
+      r = await http.post(uri, headers: h2, body: body).timeout(_httpTimeout);
     }
     return r;
   }
 
   Future<http.Response> _authDelete(Uri uri) async {
-    var r = await http.delete(uri, headers: _headers(auth: true));
-    if (r.statusCode == 401 && onTokenExpired != null && !_refreshing) {
-      _refreshing = true;
-      try {
-        await onTokenExpired!();
-      } finally {
-        _refreshing = false;
-      }
-      r = await http.delete(uri, headers: _headers(auth: true));
+    var r = await http.delete(uri, headers: _headers(auth: true)).timeout(_httpTimeout);
+    if (r.statusCode == 401 && onTokenExpired != null) {
+      await _ensureTokenRefreshed();
+      r = await http.delete(uri, headers: _headers(auth: true)).timeout(_httpTimeout);
     }
     return r;
   }
@@ -416,6 +417,7 @@ class ApiClient {
         'score': score,
         'stake': stake,
       }),
+      extraHeaders: {'Idempotency-Key': _generateIdempotencyKey()},
     );
     _check(r);
     return Prediction.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
@@ -424,11 +426,8 @@ class ApiClient {
   Future<List<LeaderboardEntry>> leaderboard({
     int limit = 50,
     String period = 'all',
-    String locale = '',
   }) async {
-    // locale 影响虚拟用户名池(zh=中文池,其它=英文池)+ 参与 seed,所以一定要透传。
     final q = {'limit': '$limit', 'period': period};
-    if (locale.isNotEmpty) q['locale'] = locale;
     final r = await http.get(_uri('/api/leaderboard', q));
     _check(r);
     final list = jsonDecode(r.body) as List;
@@ -665,6 +664,7 @@ String _zhError(String raw) {
     'match not found': 'err.match_not_found',
     'match already started or settled': 'err.match_started_or_settled',
     'match already settled': 'err.match_already_settled',
+    'match voided': 'err.match_voided',
     'no odds offered for this match': 'err.no_odds_for_match',
     'odds not available': 'err.odds_unavailable',
     'current odds unavailable': 'err.current_odds_unavailable',
@@ -691,6 +691,7 @@ String _zhError(String raw) {
     'parlay limited to 8 legs': 'err.parlay_max_legs',
     // 充值 / 提现
     'duplicate withdrawal': 'err.duplicate_withdrawal',
+    'pending withdrawal exists': 'err.pending_withdrawal',
     'this txHash has already been submitted': 'err.duplicate_tx_hash',
     'txHash is required': 'err.tx_hash_required',
     'address looks invalid': 'err.address_invalid',
@@ -705,6 +706,7 @@ String _zhError(String raw) {
     'user not found': 'err.user_not_found',
     // 系统级
     'rate limited': 'err.rate_limited',
+    'rate limit exceeded': 'err.rate_limited',
     'events unavailable: provider is not API-Football': 'err.events_unavailable',
     'stats unavailable: provider is not API-Football': 'err.stats_unavailable',
     // 基础参数

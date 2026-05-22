@@ -22,7 +22,7 @@ class AppState extends ChangeNotifier {
   String? error;
 
   // 客服 Telegram 用户名(不带 @)。后台 /admin/settings 可配置;首次加载前用默认值。
-  String customerServiceTG = 'go_home_007';
+  String customerServiceTG = 'espn_football';
 
   bool get isAuthenticated => api.token != null;
   Map<String, dynamic>? get user => api.user;
@@ -58,11 +58,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> _refreshToken() async {
     final initData = Telegram.initData();
-    if (initData.isEmpty) return;
-    try {
-      await api.loginTelegram(initData, startParam: Telegram.startParam());
-      stream.setToken(api.token);
-    } catch (_) {}
+    if (initData.isEmpty) throw Exception('session expired');
+    await api.loginTelegram(initData, startParam: Telegram.startParam());
+    stream.setToken(api.token);
   }
 
   Future<void> tryTelegramLogin() async {
