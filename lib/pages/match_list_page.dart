@@ -53,8 +53,9 @@ class _MatchListPageState extends State<MatchListPage>
   // 重算,scroll/setState 不再触发 O(n log n) 排序。
   List<MatchInfo>? _cachedVisible;
   int? _cacheKey;
+  int _matchVer = 0; // bumped on every WS merge / _loadPage to invalidate cache
   int get _currentCacheKey =>
-      Object.hash(_matches.length, _matches.hashCode, _league, _tab, _selectedDate);
+      Object.hash(_matches.length, _matchVer, _league, _tab, _selectedDate);
 
   // date picker for schedule / results
   late DateTime _selectedDate;
@@ -64,6 +65,12 @@ class _MatchListPageState extends State<MatchListPage>
   // the live minute display advances even between WS pushes.
   StreamSubscription<List<MatchInfo>>? _wsSub;
   Timer? _ticker;
+
+  /// ── 性能优化:WS match 推送节流 ────────────────────────────────
+  /// 多场比赛同时进行时,WS 推送可密集触发 setState,每次重建整个列表。
+  /// 300ms 节流把多次推送合并为一次 UI 更新,大幅减少 build 次数。
+  Timer? _wsThrottle;
+  bool _wsDirty = false;
 
   @override
   void initState() {
@@ -76,31 +83,37 @@ class _MatchListPageState extends State<MatchListPage>
     _searchCtrl.addListener(_onSearchChanged);
 
     // Merge WS-pushed updates by id so goal/cards/corners propagate without
-    // a full reload. The push payload is the full match list; we only patch
-    // the ones we already have so paging/filter aren't disturbed.
+    // a full reload. 300ms 节流:多场比赛同时推送时,先 patch 数据到 _matches,
+    // 再合并为一次 setState,避免密集 build。
     _wsSub = widget.state.stream.matches.listen((list) {
       if (!mounted || list.isEmpty || _matches.isEmpty) return;
       final byId = <int, MatchInfo>{for (final m in list) m.id: m};
-      var dirty = false;
       for (var i = 0; i < _matches.length; i++) {
         final fresh = byId[_matches[i].id];
         if (fresh != null && !identical(fresh, _matches[i])) {
           _matches[i] = fresh;
-          dirty = true;
+          _wsDirty = true;
         }
       }
-      if (dirty) setState(() {});
+      if (!_wsDirty) return;
+      if (_wsThrottle != null) return; // 已在等,攒到下一 tick
+      _wsThrottle = Timer(const Duration(milliseconds: 300), () {
+        _wsThrottle = null;
+        if (!mounted || !_wsDirty) return;
+        _wsDirty = false;
+        _matchVer++;
+        setState(() {});
+      });
     });
 
     // Local clock tick — advances `_liveMinuteText` so the on-screen minute
-    // ticks every 30s without a backend push. 30s is the sweet spot:
-    // minute changes show up within ~30s of the wall-clock minute boundary.
+    // ticks every 30s without a backend push. Only bumps _matchVer if a live
+    // match exists, so settled-only views never wastefully rebuild.
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!mounted) return;
-      // Only re-render if there's at least one live match visible — otherwise
-      // it's pure waste.
       for (final m in _matches) {
         if (m.isLive) {
+          _matchVer++;
           setState(() {});
           return;
         }
@@ -112,6 +125,7 @@ class _MatchListPageState extends State<MatchListPage>
   void dispose() {
     _wsSub?.cancel();
     _ticker?.cancel();
+    _wsThrottle?.cancel();
     _scrollCtrl.dispose();
     _chipScrollCtrl.dispose();
     _searchCtrl.dispose();
@@ -130,6 +144,7 @@ class _MatchListPageState extends State<MatchListPage>
   }
 
   void _onScroll() {
+    if (_loading || !_hasMore) return;
     if (_scrollCtrl.position.pixels >=
         _scrollCtrl.position.maxScrollExtent - 200) {
       _loadPage();
@@ -190,6 +205,7 @@ class _MatchListPageState extends State<MatchListPage>
         _total = page.total;
         _hasMore = page.hasMore;
         _loading = false;
+        _matchVer++;
       });
     } catch (e) {
       if (mounted) setState(() => _loading = false);
@@ -214,6 +230,7 @@ class _MatchListPageState extends State<MatchListPage>
   void _setLeague(String? league) {
     if (_league == league) return;
     setState(() => _league = league);
+    _loadPage(reset: true);
   }
 
   void _selectDate(DateTime d) {
@@ -259,7 +276,7 @@ class _MatchListPageState extends State<MatchListPage>
         child: ListView.builder(
           controller: _scrollCtrl,
           padding: EdgeInsets.zero,
-          addAutomaticKeepAlives: false,
+          addAutomaticKeepAlives: true,
           itemCount: _headerCount + sorted.length + (showEmpty ? 1 : 0) + (_loading ? 1 : 0) + (!_hasMore && sorted.isNotEmpty ? 1 : 0),
           itemBuilder: (context, index) {
             // Header items
@@ -602,7 +619,6 @@ class _MatchListPageState extends State<MatchListPage>
     final slug = picked.isEmpty ? null : picked;
     if (_league != slug) {
       _setLeague(slug);
-      _loadPage(reset: true);
     }
   }
 
@@ -643,20 +659,35 @@ class _MatchListPageState extends State<MatchListPage>
   // not as a separate section divider. So we just sort and let
   // _matchRow render the league inline.
 
+  /// 状态排序优先级,跟 admin 赛事列表保持完全一致:
+  /// live(进行中) > pending(待开赛) > settled(已结束)。
+  /// 已结束的比赛即便被置顶,也不能排到进行中比赛前面 — 不然凌晨 2 点
+  /// 看到 19:30 那场"完"挡在 01:00 进行中比赛上面就很反直觉。
+  int _statusRank(MatchInfo m) {
+    if (m.isLive) return 0;
+    if (m.isPending) return 1;
+    return 2; // settled
+  }
+
   List<MatchInfo> _sortMatches(List<MatchInfo> ms) {
     final sorted = List<MatchInfo>.from(ms);
     if (_tab == _Tab.all) {
+      // 全部 tab:状态优先级 > 组内 pinned 置顶 > kickoff 正序
       sorted.sort((a, b) {
+        final ra = _statusRank(a);
+        final rb = _statusRank(b);
+        if (ra != rb) return ra - rb;
         if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
-        if (a.isLive != b.isLive) return a.isLive ? -1 : 1;
         return a.date.compareTo(b.date);
       });
     } else if (_tab == _Tab.results) {
+      // 赛果 tab:全是 settled,pinned 优先 + 时间倒序(最新结束在前)
       sorted.sort((a, b) {
         if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
         return b.date.compareTo(a.date);
       });
     } else {
+      // live / schedule tab:同状态集合内,pinned 优先 + 时间正序
       sorted.sort((a, b) {
         if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
         return a.date.compareTo(b.date);
@@ -773,7 +804,9 @@ class _MatchListPageState extends State<MatchListPage>
       ),
     );
 
-    return KeyedSubtree(key: ValueKey(m.id), child: body);
+    return RepaintBoundary(
+      child: KeyedSubtree(key: ValueKey(m.id), child: body),
+    );
   }
 
   /// Header strip above the team row.
@@ -909,12 +942,8 @@ class _MatchListPageState extends State<MatchListPage>
 
     int mins;
     if (upMin == 0) {
-      // 上游尚未给出基线(刚开赛 / liveLoop 还没跑过)— 退化为从 kickoff 数,
-      // 这是仅有的兜底信号,封顶 45'(还不知道是不是已经到中场)。
       mins = elapsedFromKickoff.clamp(1, 45);
     } else {
-      // 关键路径:从 asOf 自走,而不是 kickoff。封顶 +2min 避免后端长时间
-      // 不更新时画面失真。
       var advance = upMin;
       final asOf = ld?.asOf;
       if (asOf != null) {
@@ -924,15 +953,17 @@ class _MatchListPageState extends State<MatchListPage>
           advance = upMin + addMin;
         }
       }
-      // 半场封顶:1H ≤ 45,常规时间 ≤ 90。点球 / 加时已在上面 period 分支处理。
-      if (upMin <= 45) {
+      final period = ld?.periodLabel ?? '';
+      if (period == '1H' && upMin < 45) {
         if (advance > 45) advance = 45;
-      } else {
+      } else if (period != '1H' && upMin < 90) {
         if (advance > 90) advance = 90;
       }
       mins = advance;
     }
     if (mins < 1) mins = 1;
+    if (mins > 90) return '90+${mins - 90}\'';
+    if (mins > 45 && (ld?.periodLabel == '1H')) return '45+${mins - 45}\'';
     return "$mins'";
   }
 
@@ -988,15 +1019,11 @@ class _MatchListPageState extends State<MatchListPage>
         const SizedBox(width: 10),
       ]);
     }
-    if (m.isLive && ld != null && ld.totalCorners > 0) {
+    if (m.isLive && ld != null && ld.statsAvailable) {
       stats.addAll([
         Text('${tr('matches.corners')}:${ld.homeCorners}-${ld.awayCorners}',
             style: const TextStyle(fontSize: 11, color: T.inkLo)),
         const SizedBox(width: 10),
-      ]);
-    }
-    if (m.isLive && ld != null && ld.homeYellow + ld.awayYellow > 0) {
-      stats.addAll([
         _statBadge(
             tr('live.yellow_count')
                 .replaceAll('{home}', '${ld.homeYellow}')
@@ -1004,16 +1031,16 @@ class _MatchListPageState extends State<MatchListPage>
             const Color(0xFFFFF9C4), const Color(0xFFF57F17)),
         const SizedBox(width: 6),
       ]);
-    }
-    if (m.isLive && ld != null && ld.homeRed + ld.awayRed > 0) {
-      stats.addAll([
-        _statBadge(
-            tr('live.red_count')
-                .replaceAll('{home}', '${ld.homeRed}')
-                .replaceAll('{away}', '${ld.awayRed}'),
-            const Color(0xFFFFEBEE), T.down),
-        const SizedBox(width: 6),
-      ]);
+      if (ld.homeRed + ld.awayRed > 0) {
+        stats.addAll([
+          _statBadge(
+              tr('live.red_count')
+                  .replaceAll('{home}', '${ld.homeRed}')
+                  .replaceAll('{away}', '${ld.awayRed}'),
+              const Color(0xFFFFEBEE), T.down),
+          const SizedBox(width: 6),
+        ]);
+      }
     }
 
     return Column(
@@ -1023,7 +1050,7 @@ class _MatchListPageState extends State<MatchListPage>
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: stats,
             ),
           ),

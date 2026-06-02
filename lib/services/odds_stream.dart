@@ -1,14 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/match.dart';
 
 /// Wraps a single WebSocket connection to /ws and exposes typed streams.
 /// Auto-reconnects with exponential backoff (capped at 10s).
+///
+/// Telegram Mini App WebView 在后台时会冻结 JS timer,导致 onDone 触发的
+/// reconnect Timer 无法执行。通过监听 `visibilitychange` 事件,在页面恢复
+/// 可见时立即检测并重连 WebSocket,解决"必须重启小程序才能刷新数据"的问题。
 class OddsStream {
-  OddsStream(this.url);
+  OddsStream(this.url) {
+    _installVisibilityListener();
+  }
   final String url;
 
   WebSocketChannel? _channel;
@@ -16,6 +25,9 @@ class OddsStream {
   int _backoffMs = 5000;
   String? _token;
   final Set<int> _subscribed = {};
+  bool _visibilityListenerInstalled = false;
+  /// Track last message time to detect stale connections.
+  DateTime _lastMessageAt = DateTime.now();
 
   final _oddsCtrl = StreamController<OddsSnapshot>.broadcast();
   final _matchesCtrl = StreamController<List<MatchInfo>>.broadcast();
@@ -37,25 +49,32 @@ class OddsStream {
       _channel?.sink.close();
     } catch (_) {}
     _channel = null;
-    if (token != null && token.isNotEmpty) connect();
+    // 重连(如果有 token 带上,没有则走无鉴权连接)
+    connect();
   }
 
   void connect() {
     if (_closed) return;
-    if (_token == null || _token!.isEmpty) return; // wait for login
     try {
       final u = Uri.parse(url);
-      final authed = u.replace(queryParameters: {
-        ...u.queryParameters,
-        'token': _token!,
-      });
+      // 有 token 就带上(登录用户可收到个性化推送),没有也连(未登录用户仍需实时比分)
+      final authed = (_token != null && _token!.isNotEmpty)
+          ? u.replace(queryParameters: {...u.queryParameters, 'token': _token!})
+          : u;
       _channel = WebSocketChannel.connect(authed);
+      // WebSocketChannel.connect 在 Web 上是异步的:连接可能还未建立。
+      // 等 ready future 成功后才标记 connected,失败则走重连。
+      _channel!.ready.then((_) {
+        if (_closed) return;
+        _backoffMs = 5000;
+        _setConnected(true);
+        for (final id in _subscribed) {
+          _send({'action': 'subscribe', 'matchId': id});
+        }
+      }).catchError((_) {
+        _reconnect();
+      });
       _channel!.stream.listen(_onMessage, onError: _onError, onDone: _reconnect);
-      _backoffMs = 5000;
-      _setConnected(true);
-      for (final id in _subscribed) {
-        _send({'action': 'subscribe', 'matchId': id});
-      }
     } catch (_) {
       _reconnect();
     }
@@ -80,6 +99,7 @@ class OddsStream {
   }
 
   void _onMessage(dynamic raw) {
+    _lastMessageAt = DateTime.now();
     try {
       final m = jsonDecode(raw as String) as Map<String, dynamic>;
       switch (m['type']) {
@@ -112,6 +132,49 @@ class OddsStream {
     final delay = _backoffMs;
     _backoffMs = (_backoffMs * 2).clamp(5000, 30000);
     Timer(Duration(milliseconds: delay), connect);
+  }
+
+  /// 监听浏览器 visibilitychange 事件。Telegram Mini App WebView 从后台恢复时
+  /// JS timer 可能未执行(onDone 回调注册的 reconnect Timer 被冻结),这里强制检测
+  /// 并立即重连,确保比分/赔率实时推送不中断。
+  void _installVisibilityListener() {
+    if (!kIsWeb || _visibilityListenerInstalled) return;
+    _visibilityListenerInstalled = true;
+    try {
+      final doc = globalContext.getProperty('document'.toJS) as JSObject?;
+      if (doc == null) return;
+      doc.callMethod(
+        'addEventListener'.toJS,
+        'visibilitychange'.toJS,
+        ((JSAny? _) {
+          _onVisibilityChange();
+        }).toJS,
+      );
+    } catch (_) {}
+  }
+
+  void _onVisibilityChange() {
+    if (_closed) return;
+    try {
+      final doc = globalContext.getProperty('document'.toJS) as JSObject?;
+      final state =
+          (doc?.getProperty('visibilityState'.toJS) as JSString?)?.toDart;
+      if (state != 'visible') return;
+
+      // 页面恢复可见:如果已不在连接状态,或者超过 20s 没收到消息(服务端 30s ping),
+      // 立即关闭旧连接并重连。
+      final stale =
+          DateTime.now().difference(_lastMessageAt).inSeconds > 20;
+      if (!_connected || _channel == null || stale) {
+        try {
+          _channel?.sink.close();
+        } catch (_) {}
+        _channel = null;
+        _setConnected(false);
+        _backoffMs = 5000; // reset backoff for fast reconnect
+        connect();
+      }
+    } catch (_) {}
   }
 
   Future<void> close() async {

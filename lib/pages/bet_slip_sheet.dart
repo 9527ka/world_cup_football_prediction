@@ -138,24 +138,40 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
                 if (s.score == 'away') newPrice = odds.moneyLine!.away;
               }
               break;
-            case MarketType.doubleChance:
-              if (odds.doubleChance != null) {
-                if (s.score == '1X') newPrice = odds.doubleChance!.homeOrDraw;
-                if (s.score == 'X2') newPrice = odds.doubleChance!.drawOrAway;
-                if (s.score == '12') newPrice = odds.doubleChance!.homeOrAway;
-              }
-              break;
-            case MarketType.drawNoBet:
-              if (odds.drawNoBet != null) {
-                if (s.score == 'home') newPrice = odds.drawNoBet!.home;
-                if (s.score == 'away') newPrice = odds.drawNoBet!.away;
+            case MarketType.htOverUnder:
+              final atH = s.score.lastIndexOf('@');
+              if (atH > 0) {
+                final sideH = s.score.substring(0, atH);
+                final lineH = double.tryParse(s.score.substring(atH + 1));
+                if (lineH != null) {
+                  for (final ou in odds.htOverUnders) {
+                    if ((ou.line - lineH).abs() < 0.01) {
+                      if (sideH == 'over') newPrice = ou.over;
+                      if (sideH == 'under') newPrice = ou.under;
+                      break;
+                    }
+                  }
+                }
               }
               break;
             case MarketType.asianHandicap:
-              if (odds.handicap != null) {
-                // s.score may be encoded "home@-0.5" — extract side
-                final at = s.score.lastIndexOf('@');
-                final side = at > 0 ? s.score.substring(0, at) : s.score;
+              // s.score "home@-0.5" / "away@+1.5" — 解析 side + line。
+              final at = s.score.lastIndexOf('@');
+              final side = at > 0 ? s.score.substring(0, at) : s.score;
+              double? line;
+              if (at > 0) line = double.tryParse(s.score.substring(at + 1));
+              // 先在 walking handicaps 多线找,然后 fallback 到单线 handicap。
+              if (line != null) {
+                for (final h in odds.handicaps) {
+                  if ((h.line - line).abs() < 0.01) {
+                    if (side == 'home') newPrice = h.home;
+                    if (side == 'away') newPrice = h.away;
+                    break;
+                  }
+                }
+              }
+              if (newPrice == null && odds.handicap != null &&
+                  (line == null || (odds.handicap!.line - line).abs() < 0.01)) {
                 if (side == 'home') newPrice = odds.handicap!.home;
                 if (side == 'away') newPrice = odds.handicap!.away;
               }

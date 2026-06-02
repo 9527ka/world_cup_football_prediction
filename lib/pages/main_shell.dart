@@ -57,7 +57,16 @@ class _MainShellState extends State<MainShell> {
             decoration: const BoxDecoration(gradient: T.pageGradient),
             child: SafeArea(
               bottom: false,
-              child: IndexedStack(index: _index, children: pages),
+              child: IndexedStack(
+                index: _index,
+                children: [
+                  for (var i = 0; i < pages.length; i++)
+                    TickerMode(
+                      enabled: _index == i,
+                      child: pages[i],
+                    ),
+                ],
+              ),
             ),
           ),
           Positioned(

@@ -129,9 +129,6 @@ class _ProfilePageState extends State<ProfilePage> {
     // 用户编码:6 位数字,后端 backfill + 注册时生成。前台展示这个而不是
      // 真实 user.id,既隐藏内部编号又方便客服报单。
     final userCode = (user?['userCode'] as String?) ?? '';
-    // 邀请码(B+base36 / E+5位 base36),用户分享拉新用。和用户编码并列展示
-    // 让 TG Mini App 用户在 profile 直接能看到、复制,不必跳进"我的邀请"。
-    final inviteCode = (user?['inviteCode'] as String?) ?? '';
 
     // Telegram 头像 URL(用户头像直链, t.me/i/userpic/*),
     // 浏览器 widget 登录 + Mini App initData 登录都会带,
@@ -221,31 +218,6 @@ class _ProfilePageState extends State<ProfilePage> {
                       ],
                     ],
                   ),
-                  if (inviteCode.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Text('${tr('feat.share.invite_code')}  $inviteCode',
-                            style: const TextStyle(
-                                fontSize: 11,
-                                color: T.brandDeep,
-                                fontWeight: FontWeight.w700,
-                                fontFamily: T.fontMono)),
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: () {
-                            Clipboard.setData(ClipboardData(text: inviteCode));
-                            Toast.show(context, tr('common.copied'));
-                          },
-                          borderRadius: BorderRadius.circular(4),
-                          child: const Padding(
-                            padding: EdgeInsets.all(2),
-                            child: Icon(Icons.copy_rounded, size: 14, color: T.brandDeep),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
                   const SizedBox(height: 4),
                   // VIP 徽章 — 优先用 /api/me/vip 实时数据,未到货时回退到默认 (普通会员 0.3%)
                   Container(
@@ -327,7 +299,13 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
             TextButton(
-              onPressed: () {
+              onPressed: () async {
+                if (isInMiniApp()) {
+                  await widget.state.tryTelegramLogin();
+                } else {
+                  final ok = await requireLogin(context, widget.state);
+                  if (!ok) return;
+                }
                 setState(() => _future = _load());
               },
               style: TextButton.styleFrom(

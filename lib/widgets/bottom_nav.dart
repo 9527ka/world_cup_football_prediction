@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -113,17 +114,29 @@ class _CenterButton extends StatefulWidget {
 
 class _CenterButtonState extends State<_CenterButton>
     with TickerProviderStateMixin {
-  /// scanLight 高光扫光,1.2s 单向循环
+  /// scanLight 高光扫光,1.2s 单向循环 — 间歇播放,减少 GPU 开销
   late final AnimationController _scan = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1200),
-  )..repeat();
+  );
 
   /// Q 弹缩放周期 — 弹出 → 回压 → 小回弹 → 稳态停顿,1.4s 一轮
   late final AnimationController _pulse = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1400),
-  )..repeat();
+  );
+
+  Timer? _restartTimer;
+
+  void _playOnce() {
+    _scan.forward(from: 0);
+    _pulse.forward(from: 0);
+    // 播完后休息 8 秒再来一轮
+    _restartTimer?.cancel();
+    _restartTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) _playOnce();
+    });
+  }
 
   late final Animation<double> _depositScale = TweenSequence<double>([
     // 0 → 25%:从 1 弹出到 1.10
@@ -156,7 +169,14 @@ class _CenterButtonState extends State<_CenterButton>
   ]).animate(_pulse);
 
   @override
+  void initState() {
+    super.initState();
+    _playOnce();
+  }
+
+  @override
   void dispose() {
+    _restartTimer?.cancel();
     _scan.dispose();
     _pulse.dispose();
     super.dispose();

@@ -334,6 +334,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
           width: size, height: size, fit: BoxFit.cover,
           // 2x for retina,但仍避免按原图(可能 512px)解码占内存
           cacheWidth: (size * 2).toInt(), cacheHeight: (size * 2).toInt(),
+          gaplessPlayback: true,
           errorBuilder: (_, __, ___) => _fallbackAvatar(u, size, gradient: gradient)),
       );
     }

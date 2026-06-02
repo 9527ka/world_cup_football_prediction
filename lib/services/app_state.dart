@@ -38,11 +38,23 @@ class AppState extends ChangeNotifier {
       matches = m;
       notifyListeners();
     });
-    if (api.token == null) {
+    // Mini App: always re-authenticate with fresh initData to renew JWT,
+    // even if we have a stored token. Telegram provides fresh initData on
+    // each WebView creation; stale stored tokens cause needless 401 round-trips
+    // and confuse users with "session expired" banners.
+    // Browser: only attempt if no stored token (manual login via LoginWall).
+    final initData = Telegram.initData();
+    if (initData.isNotEmpty) {
       await tryTelegramLogin();
+    } else if (api.token == null) {
+      notifyListeners();
     }
-    // /ws now requires JWT (token query param). Connect only after we have one.
+    // WS 不再强制要求 token:未登录用户也能收到全局比分/赔率推送。
+    // 有 token 就带上(后端可选鉴权),没有也连。
     stream.setToken(api.token);
+    // 如果 setToken(null) 被 _token==null 短路(首次两者都是 null),
+    // 手动触发一次 connect 确保匿名连接建立。
+    if (!stream.isConnected) stream.connect();
     await refreshMatches();
     // 拉一次 home/config(客服账号/周奖池)。失败保留默认值,不影响登录主流程。
     unawaited(_refreshHomeConfig());

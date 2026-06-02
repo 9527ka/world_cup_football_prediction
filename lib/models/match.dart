@@ -90,6 +90,7 @@ class LiveDetail {
   // 避免在两次 WS 推送之间画面静止,也不会像旧"从 kickoff 自走"那样
   // 把 开球延误 / 长中场 / VAR / 入场仪式 错算成比赛分钟。
   final DateTime? asOf;
+  final bool statsAvailable;
   final int homeCorners;
   final int awayCorners;
   final int homeYellow;
@@ -103,6 +104,7 @@ class LiveDetail {
     this.extra = 0,
     this.periodLabel = '',
     this.asOf,
+    this.statsAvailable = false,
     this.homeCorners = 0,
     this.awayCorners = 0,
     this.homeYellow = 0,
@@ -123,6 +125,7 @@ class LiveDetail {
       extra: (j['extra'] ?? 0) as int,
       periodLabel: j['periodLabel'] ?? '',
       asOf: asOf,
+      statsAvailable: j['statsAvailable'] == true,
       homeCorners: (j['homeCorners'] ?? 0) as int,
       awayCorners: (j['awayCorners'] ?? 0) as int,
       homeYellow: (j['homeYellow'] ?? 0) as int,
@@ -258,15 +261,18 @@ class ScoreOption {
 }
 
 /// 大小球(进球数 over/under) — 单线市场,通常 line=2.5。
+// OverUnderLine 加 isWalking 标记 — 后端走地动态生成的滚球线,前端 UI 加"走地"小徽章。
 class OverUnderLine {
   final double line;
   final double over;
   final double under;
-  OverUnderLine({required this.line, required this.over, required this.under});
+  final bool isWalking; // 走地动态生成的 line
+  OverUnderLine({required this.line, required this.over, required this.under, this.isWalking = false});
   factory OverUnderLine.fromJson(Map<String, dynamic> j) => OverUnderLine(
         line: (j['line'] ?? 2.5).toDouble(),
         over: (j['over'] ?? 0).toDouble(),
         under: (j['under'] ?? 0).toDouble(),
+        isWalking: j['isWalking'] == true,
       );
 }
 
@@ -281,44 +287,19 @@ class BinaryMarket {
       );
 }
 
-/// 双胜(Double Chance) — 1X / X2 / 12 三选项,从 1X2 派生。
-class DoubleChanceMarket {
-  final double homeOrDraw; // 1X
-  final double drawOrAway; // X2
-  final double homeOrAway; // 12
-  DoubleChanceMarket({
-    required this.homeOrDraw,
-    required this.drawOrAway,
-    required this.homeOrAway,
-  });
-  factory DoubleChanceMarket.fromJson(Map<String, dynamic> j) => DoubleChanceMarket(
-        homeOrDraw: (j['homeOrDraw'] ?? 0).toDouble(),
-        drawOrAway: (j['drawOrAway'] ?? 0).toDouble(),
-        homeOrAway: (j['homeOrAway'] ?? 0).toDouble(),
-      );
-}
-
-/// 平退本(Draw No Bet) — 主胜或客胜,平局退本金。
-class DrawNoBetMarket {
-  final double home;
-  final double away;
-  DrawNoBetMarket({required this.home, required this.away});
-  factory DrawNoBetMarket.fromJson(Map<String, dynamic> j) => DrawNoBetMarket(
-        home: (j['home'] ?? 0).toDouble(),
-        away: (j['away'] ?? 0).toDouble(),
-      );
-}
-
 /// 让球盘(Asian Handicap) — 单线半数,主队让球数 line(负=主让,正=主受让)
+// HandicapMarket 加 isWalking — 后端走地动态生成的滚球让球线。
 class HandicapMarket {
   final double line;
   final double home;
   final double away;
-  HandicapMarket({required this.line, required this.home, required this.away});
+  final bool isWalking;
+  HandicapMarket({required this.line, required this.home, required this.away, this.isWalking = false});
   factory HandicapMarket.fromJson(Map<String, dynamic> j) => HandicapMarket(
         line: (j['line'] ?? 0).toDouble(),
         home: (j['home'] ?? 0).toDouble(),
         away: (j['away'] ?? 0).toDouble(),
+        isWalking: j['isWalking'] == true,
       );
 }
 
@@ -330,13 +311,16 @@ class OddsSnapshot {
   final List<ScoreOption> correctScore;
   final OverUnderLine? overUnder; // legacy line=2.5,继续读以兼容老前端代码
   final List<OverUnderLine> overUnders; // 多线 O/U(1.5/2.5/3.5)
+  final List<OverUnderLine> htOverUnders; // 上半场大小球(走地,minute<42)
   final BinaryMarket? btts;
-  final DoubleChanceMarket? doubleChance;
-  final DrawNoBetMarket? drawNoBet;
   final HandicapMarket? handicap;
+  final List<HandicapMarket> handicaps; // 走地 3 条 line(fair±0.5)
   final Map<String, String> change;
   final bool isLive;
   final DateTime? lockUntil;
+  /// 85+ 分钟 / 加时 → 整盘终场封盘:赔率仍可见(冻结在 84 分钟价位),
+  /// 但任何下注 / cashout handler 会拒。前端按钮保留可见,tap 弹"已封盘"。
+  final bool marketsClosedFinal;
 
   OddsSnapshot({
     required this.matchId,
@@ -346,13 +330,14 @@ class OddsSnapshot {
     required this.correctScore,
     required this.overUnder,
     this.overUnders = const [],
+    this.htOverUnders = const [],
     required this.btts,
-    this.doubleChance,
-    this.drawNoBet,
     required this.handicap,
+    this.handicaps = const [],
     required this.change,
     this.isLive = false,
     this.lockUntil,
+    this.marketsClosedFinal = false,
   });
 
   bool get isLocked {
@@ -387,21 +372,24 @@ class OddsSnapshot {
           .cast<Map<String, dynamic>>()
           .map(OverUnderLine.fromJson)
           .toList(),
+      htOverUnders: ((j['htOverUnders'] ?? []) as List)
+          .cast<Map<String, dynamic>>()
+          .map(OverUnderLine.fromJson)
+          .toList(),
       btts: j['btts'] == null
           ? null
           : BinaryMarket.fromJson(j['btts'] as Map<String, dynamic>),
-      doubleChance: j['doubleChance'] == null
-          ? null
-          : DoubleChanceMarket.fromJson(j['doubleChance'] as Map<String, dynamic>),
-      drawNoBet: j['drawNoBet'] == null
-          ? null
-          : DrawNoBetMarket.fromJson(j['drawNoBet'] as Map<String, dynamic>),
       handicap: j['handicap'] == null
           ? null
           : HandicapMarket.fromJson(j['handicap'] as Map<String, dynamic>),
+      handicaps: ((j['handicaps'] ?? []) as List)
+          .cast<Map<String, dynamic>>()
+          .map(HandicapMarket.fromJson)
+          .toList(),
       change: ((j['change'] ?? {}) as Map).cast<String, String>(),
       isLive: j['isLive'] == true,
       lockUntil: lu,
+      marketsClosedFinal: j['marketsClosedFinal'] == true,
     );
   }
 }
@@ -413,8 +401,7 @@ class MarketType {
   static const btts = 'btts';
   static const matchWinner = 'match_winner';
   static const asianHandicap = 'asian_handicap';
-  static const doubleChance = 'double_chance';
-  static const drawNoBet = 'draw_no_bet';
+  static const htOverUnder = 'ht_over_under';
 }
 
 /// 单条赔率历史采样点。
@@ -880,6 +867,8 @@ class BetRow {
   final String away;
   final String? homeZh;
   final String? awayZh;
+  final int homeId;
+  final int awayId;
   final String leagueName;
   final String leagueSlug;
   final DateTime? matchDate;
@@ -893,6 +882,8 @@ class BetRow {
     required this.away,
     this.homeZh,
     this.awayZh,
+    this.homeId = 0,
+    this.awayId = 0,
     required this.leagueName,
     required this.leagueSlug,
     this.matchDate,
@@ -907,6 +898,8 @@ class BetRow {
         away: j['away'] ?? '',
         homeZh: j['homeZh'] as String?,
         awayZh: j['awayZh'] as String?,
+        homeId: (j['homeId'] as num?)?.toInt() ?? 0,
+        awayId: (j['awayId'] as num?)?.toInt() ?? 0,
         leagueName: j['leagueName'] ?? '',
         leagueSlug: j['leagueSlug'] ?? '',
         matchDate: j['matchDate'] == null

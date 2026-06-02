@@ -21,6 +21,20 @@ import '../widgets/light_card.dart';
 import '../widgets/odds_chip.dart';
 import '../widgets/sparkline_chart.dart';
 
+/// 格式化 line 值:quarter (.25/.75) 用 2 位小数,其他用 1 位。
+/// 皇冠惯例:0.25 显示 "0.25" 而非 "0.3",0.5 显示 "0.5",1.0 显示 "1.0"。
+String _fmtLine(double v) {
+  final frac = (v.abs() - v.abs().truncateToDouble()).abs();
+  final isQ = (frac > 0.20 && frac < 0.30) || (frac > 0.70 && frac < 0.80);
+  return isQ ? v.toStringAsFixed(2) : v.toStringAsFixed(1);
+}
+
+/// AH line label for bet slip: "+0.5", "-0.25", "0" (no sign for zero).
+String _ahLineLabel(double line) {
+  if (line.abs() < 0.001) return '0';
+  return line > 0 ? '+${_fmtLine(line)}' : _fmtLine(line);
+}
+
 /// 03 / 04 · 比赛详情 — 浅色 hero + 1x2 + 19 格波胆 + 下注抽屉。
 class MatchDetailPage extends StatefulWidget {
   const MatchDetailPage({super.key, required this.state, required this.match});
@@ -95,6 +109,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   Map<String, int> _statsAway = {};
   Timer? _statsTimer;
 
+  /// 30s 兜底主动拉 match snapshot(WS 漏掉时也能更新比分/角球)。
+  /// 后端 getMatch 直接从内存 snapshot 取,零 API 配额消耗。
+  Timer? _matchPollTimer;
+
   /// 进球 / 红黄牌 / 换人 时间线 — live + settled 都拉一次。
   List<MatchEvent> _events = [];
 
@@ -110,9 +128,52 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   double _drawerHeight = 230;
   bool _drawerMeasurePending = false;
 
+  /// ── 性能优化:WS odds 节流 ────────────────────────────────────
+  /// 高频赛事赔率推送可达数次/秒,每次 setState 重建 2800+ 行 widget tree 是卡顿根因。
+  /// 用 150ms 节流收拢为 ≤7 次/秒,体感平滑且大幅降低 build 开销。
+  Timer? _oddsThrottle;
+  OddsSnapshot? _pendingOdds;
+
+  /// ── 性能优化:WS matches 节流 ─────────────────────────────────
+  Timer? _matchThrottle;
+  MatchInfo? _pendingMatch;
+
+  /// ── 性能优化:lock 倒计时用 ValueNotifier 隔离 ─────────────────
+  /// 进球封盘倒计时(1s/tick)只需更新底部 drawer 的秒数文本,不应触发全页 setState。
+  /// 改用 ValueNotifier + ValueListenableBuilder 把重建范围限制在 drawer 内。
+  final ValueNotifier<int> _lockSecsNotifier = ValueNotifier<int>(0);
+
+  /// ── 性能优化:波胆排序缓存 ────────────────────────────────────
+  /// _scoreGrid() 每次 build 都对 3 个列做 O(n log n) sort,WS 每推一次赔率
+  /// 就执行 3 次排序。改为在 _odds 变更时一次性算好,build 直接读缓存。
+  List<ScoreOption> _sortedCSHome = const [];
+  List<ScoreOption> _sortedCSDraw = const [];
+  List<ScoreOption> _sortedCSAway = const [];
+  ScoreOption? _sortedCSOther;
+  OddsSnapshot? _csGridOddsRef; // 用于检测是否需要重算
+
   // 只有 settled(已结束)的比赛完全锁住下注。pending 和 live 都允许投注。
   bool get _locked => _match.isSettled;
   bool get _isLive => _match.isLive;
+
+  /// 85+ 分钟 / 加时阶段:赔率冻结,按钮保留可见但不可下注。
+  /// tap 任何赔率按钮 → 弹"已封盘"toast,不进入下注流程。
+  bool get _marketsClosed => _odds?.marketsClosedFinal == true;
+
+  /// 用户 tap 一个赔率按钮:封盘期弹 toast,否则把选项设为当前 _selected。
+  /// 13 处 cell onTap 统一走这里,封盘门控集中化。
+  void _trySelect(_BetSelection sel) {
+    if (_marketsClosed) {
+      Toast.show(context, tr('detail.live_locked_title'), kind: 'warn');
+      return;
+    }
+    setState(() => _selected = sel);
+  }
+  bool get _hasLiveStats {
+    final ld = _match.live;
+    if (ld == null) return false;
+    return ld.statsAvailable;
+  }
   // 滚球进球封盘期 — 拒绝下注但可继续选择/查看
   bool get _liveLocked {
     final lu = _odds?.lockUntil;
@@ -128,38 +189,21 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
 
   Future<void> _bootstrap() async {
     widget.state.stream.subscribe(widget.match.id);
+    // ── 赔率推送:150ms 节流,避免高频 setState 导致掉帧 ──────────
     _sub = widget.state.stream.odds.listen((s) {
-      if (s.matchId == widget.match.id && mounted) {
-        _diffAndFlash(_odds, s);
-        final hadLock = _odds?.lockUntil;
-        setState(() {
-          _odds = s;
-          if (_selected != null) {
-            final live = _priceForSelection(_selected!, s);
-            if (live <= 0) {
-              _selected = null;
-            } else if ((live - _selected!.price).abs() > 0.005) {
-              _selected = _BetSelection(
-                marketType: _selected!.marketType,
-                score: _selected!.score,
-                price: live,
-                label: _selected!.label,
-              );
-            }
-          }
-        });
-        if (s.lockUntil != hadLock) _maybeStartLockTimer();
-      }
+      if (s.matchId != widget.match.id || !mounted) return;
+      _pendingOdds = s;
+      if (_oddsThrottle != null) return; // 已在等待中,攒到下一 tick
+      _oddsThrottle = Timer(const Duration(milliseconds: 150), _flushOdds);
     });
-    // Live match push: keep _match in sync with the latest score/status so
-    // the hero "X:Y" header and any per-market resolved-state checks stay
-    // current. Without this, a goal scored elsewhere wouldn't reflect on
-    // the detail page until the user pops + re-enters.
+    // ── match 推送:300ms 节流 ────────────────────────────────────
     _matchesSub = widget.state.stream.matches.listen((list) {
       if (!mounted) return;
       for (final m in list) {
         if (m.id == widget.match.id) {
-          if (mounted) setState(() => _match = m);
+          _pendingMatch = m;
+          if (_matchThrottle != null) return;
+          _matchThrottle = Timer(const Duration(milliseconds: 300), _flushMatch);
           break;
         }
       }
@@ -195,6 +239,64 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         _refreshStatsAndEvents();
       });
     }
+
+    // 30s 主动拉 match snapshot 兜底 — WS 推送漏掉/网络抖动时也能跟上。
+    // 仅对 live 比赛跑(已结束的不需要),settled 后 timer 自动 cancel。
+    if (_isLive) {
+      _matchPollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+        _refreshMatchSnapshot();
+      });
+    }
+  }
+
+  /// 主动拉 match snapshot — pull-to-refresh + 30s 定时调用。
+  /// 后端 getMatch handler 直接从 fetcher snapshot 取,无 API 配额消耗。
+  Future<void> _refreshMatchSnapshot() async {
+    try {
+      final fresh = await widget.state.api.getMatch(widget.match.id);
+      if (!mounted) return;
+      setState(() => _match = fresh);
+      // 比赛结束 → 停掉自己的 polling 避免无用请求
+      if (!_isLive && _matchPollTimer != null) {
+        _matchPollTimer?.cancel();
+        _matchPollTimer = null;
+      }
+    } catch (_) {/* 静默 — 下个周期重试 */}
+  }
+
+  /// ── 节流 flush 回调 ─────────────────────────────────────────────
+  void _flushOdds() {
+    _oddsThrottle = null;
+    final s = _pendingOdds;
+    if (s == null || !mounted) return;
+    _pendingOdds = null;
+    _diffAndFlash(_odds, s);
+    final hadLock = _odds?.lockUntil;
+    setState(() {
+      _odds = s;
+      if (_selected != null) {
+        final live = _priceForSelection(_selected!, s);
+        if (live <= 0) {
+          _selected = null;
+        } else if ((live - _selected!.price).abs() > 0.005) {
+          _selected = _BetSelection(
+            marketType: _selected!.marketType,
+            score: _selected!.score,
+            price: live,
+            label: _selected!.label,
+          );
+        }
+      }
+    });
+    if (s.lockUntil != hadLock) _maybeStartLockTimer();
+  }
+
+  void _flushMatch() {
+    _matchThrottle = null;
+    final m = _pendingMatch;
+    if (m == null || !mounted) return;
+    _pendingMatch = null;
+    setState(() => _match = m);
   }
 
   /// Look up the live price for a selection in a snapshot. Returns 0 when
@@ -223,26 +325,24 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         if (side == 'over') return ouLine.over;
         if (side == 'under') return ouLine.under;
         return 0;
+      case MarketType.htOverUnder:
+        // score 必须带 line:"over@1.5" 等。
+        final atH = sel.score.lastIndexOf('@');
+        if (atH <= 0) return 0;
+        final sideH = sel.score.substring(0, atH);
+        final lineH = double.tryParse(sel.score.substring(atH + 1)) ?? 0;
+        for (final ou in s.htOverUnders) {
+          if ((ou.line - lineH).abs() < 0.01) {
+            if (sideH == 'over') return ou.over;
+            if (sideH == 'under') return ou.under;
+          }
+        }
+        return 0;
       case MarketType.btts:
         final b = s.btts;
         if (b == null) return 0;
         if (sel.score == 'yes') return b.yes;
         if (sel.score == 'no') return b.no;
-        return 0;
-      case MarketType.doubleChance:
-        final dc = s.doubleChance;
-        if (dc == null) return 0;
-        switch (sel.score) {
-          case '1X': return dc.homeOrDraw;
-          case 'X2': return dc.drawOrAway;
-          case '12': return dc.homeOrAway;
-        }
-        return 0;
-      case MarketType.drawNoBet:
-        final dnb = s.drawNoBet;
-        if (dnb == null) return 0;
-        if (sel.score == 'home') return dnb.home;
-        if (sel.score == 'away') return dnb.away;
         return 0;
       case MarketType.matchWinner:
         final ml = s.moneyLine;
@@ -254,6 +354,19 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         }
         return 0;
       case MarketType.asianHandicap:
+        // 走地让球 score 格式: "home@+0.5" / "away@-1.0"
+        final atIdx = sel.score.lastIndexOf('@');
+        if (atIdx > 0) {
+          final side = sel.score.substring(0, atIdx);
+          final lineVal = double.tryParse(sel.score.substring(atIdx + 1)) ?? 0;
+          for (final hh in s.handicaps) {
+            if ((hh.line - lineVal).abs() < 0.01) {
+              return side == 'home' ? hh.home : hh.away;
+            }
+          }
+          return 0;
+        }
+        // 赛前单线 AH
         final h = s.handicap;
         if (h == null) return 0;
         if (sel.score == 'home') return h.home;
@@ -375,10 +488,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     }
   }
 
-  @override
   void _maybeStartLockTimer() {
     final lu = _odds?.lockUntil;
     if (lu != null && lu.isAfter(DateTime.now())) {
+      _lockSecsNotifier.value = lu.difference(DateTime.now()).inSeconds.clamp(0, 99);
       if (_lockTickTimer?.isActive == true) return;
       _lockTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
@@ -386,8 +499,13 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         if (lu2 == null || lu2.isBefore(DateTime.now())) {
           _lockTickTimer?.cancel();
           _lockTickTimer = null;
+          _lockSecsNotifier.value = 0;
+          // 封盘→解锁转换:需要一次 setState 更新 _liveLocked 相关 UI
+          setState(() {});
+          return;
         }
-        setState(() {});
+        // 只更新 ValueNotifier,不触发全页 setState
+        _lockSecsNotifier.value = lu2.difference(DateTime.now()).inSeconds.clamp(0, 99);
       });
     }
   }
@@ -400,6 +518,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     _historyTimer?.cancel();
     _lockTickTimer?.cancel();
     _statsTimer?.cancel();
+    _matchPollTimer?.cancel();
+    _oddsThrottle?.cancel();
+    _matchThrottle?.cancel();
+    _lockSecsNotifier.dispose();
     for (final t in _flashTimers.values) {
       t.cancel();
     }
@@ -410,6 +532,11 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     final sel = _selected;
     if (sel == null) return;
     if (_placing) return; // double-tap guard
+    if (_liveLocked) return; // goal lock — backend would also reject (423)
+    if (_marketsClosed) {
+      Toast.show(context, tr('detail.live_locked_title'), kind: 'warn');
+      return;
+    }
     // 浏览器未登录:先弹 Telegram 登录,登录成功后再下注。Mini App 内永远是
     // 已登录,直接 fall through。
     if (!widget.state.isAuthenticated) {
@@ -487,25 +614,38 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 children: [
                   _topBar(),
                   Expanded(
-                child: ListView(
-                  padding: EdgeInsets.fromLTRB(0, 0, 0, bottomPad),
-                  children: [
-                    _hero(),
-                    if (_locked) _lockedBanner(),
-                    if (_isLive && !_locked) _liveBanner(),
-                    if (_statsHome.isNotEmpty || _statsAway.isNotEmpty)
-                      _liveStatsSection(),
-                    if (_events.isNotEmpty) _eventsTimelineSection(),
-                    _sectionHeader(),
-                    _columnLabels(),
-                    _scoreGrid(),
-                    _winnerSection(),
-                    _doubleChanceSection(),
-                    _drawNoBetSection(),
-                    _handicapSection(),
-                    _overUnderSection(),
-                    _bttsSection(),
-                  ],
+                child: RefreshIndicator(
+                  color: T.brandDeep,
+                  // 下拉刷新:同时拉 match snapshot(比分/角球) + stats + events,
+                  // 比 30s 自动 polling 更即时,适合用户手动催更新。
+                  onRefresh: () async {
+                    await Future.wait([
+                      _refreshMatchSnapshot(),
+                      _refreshStatsAndEvents(),
+                    ]);
+                  },
+                  child: ListView(
+                    padding: EdgeInsets.fromLTRB(0, 0, 0, bottomPad),
+                    // RefreshIndicator 要 ListView 永远可滚动才能下拉触发
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    addRepaintBoundaries: true,
+                    children: [
+                      _hero(),
+                      if (_locked) _lockedBanner(),
+                      if (_isLive && !_locked) _liveBanner(),
+                      if (_statsHome.isNotEmpty || _statsAway.isNotEmpty || _hasLiveStats)
+                        _liveStatsSection(),
+                      if (_events.isNotEmpty) _eventsTimelineSection(),
+                      _sectionHeader(),
+                      _columnLabels(),
+                      RepaintBoundary(child: _scoreGrid()),
+                      RepaintBoundary(child: _winnerSection()),
+                      RepaintBoundary(child: _handicapSection()),
+                      RepaintBoundary(child: _overUnderSection()),
+                      RepaintBoundary(child: _htOverUnderSection()),
+                      RepaintBoundary(child: _bttsSection()),
+                    ],
+                  ),
                 ),
               ),
                 ],
@@ -640,6 +780,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   width: 132,
                   child: Column(
                     children: [
+                      if (_isLive || _locked) ...[
+                        _heroStatusBadge(m),
+                        const SizedBox(height: 4),
+                      ],
                       if (m.scores != null)
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -662,8 +806,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                                 fontWeight: FontWeight.w800,
                                 color: T.inkLo,
                                 fontFamily: T.fontMono)),
+                      // 半场比分 + 角球/黄牌一行概要(仅 live/settled 时有数据)
+                      if (m.scores != null) _heroMiniStats(m),
                       const SizedBox(height: 4),
-                      Text(_locked ? '${tr('detail.settled_at')} · ${fmt.format(m.date)}' : fmt.format(m.date),
+                      Text(fmt.format(m.date),
                           style: const TextStyle(
                               fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
                     ],
@@ -767,6 +913,103 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           Text(label, style: const TextStyle(fontSize: 9, color: T.inkLo, fontWeight: FontWeight.w600)),
         ],
       );
+
+  /// 比分下方迷你统计行:半场比分 / 角球 / 黄牌,紧凑一行,跟懂球帝对齐。
+  Widget _heroMiniStats(MatchInfo m) {
+    final parts = <String>[];
+    // 半场比分
+    final ht = m.scores?.periods?['1H'];
+    if (ht != null) {
+      parts.add('${tr('stats.ht_short')} ${ht.home}-${ht.away}');
+    }
+    // 角球 / 黄牌优先取 live 字段(WS 秒级),fallback 到 polling stats
+    final ld = m.live;
+    final hasLive = ld != null && ld.statsAvailable;
+    final corH = hasLive ? ld.homeCorners : (_statsHome['corners'] ?? 0);
+    final corA = hasLive ? ld.awayCorners : (_statsAway['corners'] ?? 0);
+    if (hasLive || corH > 0 || corA > 0) {
+      parts.add('${tr('stats.corner_short')} $corH-$corA');
+    }
+    final yelH = hasLive ? ld.homeYellow : (_statsHome['yellow'] ?? 0);
+    final yelA = hasLive ? ld.awayYellow : (_statsAway['yellow'] ?? 0);
+    if (hasLive || yelH > 0 || yelA > 0) {
+      parts.add('${tr('stats.yellow_short')} $yelH-$yelA');
+    }
+    if (parts.isEmpty) return const SizedBox(height: 4);
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(parts.join(' · '),
+          style: const TextStyle(fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  /// 比分上方状态徽章:live 时显示比赛分钟(自走),settled 时显示"已结束"。
+  Widget _heroStatusBadge(MatchInfo m) {
+    final isLive = m.isLive;
+    String text;
+    Color bg;
+    Color fg;
+    if (isLive) {
+      text = _heroLiveMinute(m);
+      bg = const Color(0x22E03E2D);
+      fg = T.down;
+    } else {
+      // settled / voided
+      text = tr('detail.status_ft');
+      bg = const Color(0xFFEEF2F7);
+      fg = T.inkLo;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w800, color: fg)),
+    );
+  }
+
+  /// 详情页 hero 比赛分钟 — 与列表页 _liveMinuteText 同算法(asOf 自走 +2min 封顶)。
+  String _heroLiveMinute(MatchInfo m) {
+    final ld = m.live;
+    if (ld != null) {
+      final pl = ld.periodLabel;
+      if (pl == 'HT') return tr('live.minute_ht');
+      if (pl == 'PEN') return tr('live.minute_pen');
+      if (pl == 'BT') return ld.minuteDisplay;
+      if (ld.extra > 0) return '${ld.minute}+${ld.extra}\'';
+    }
+    final upMin = ld?.minute ?? 0;
+    final elapsedFromKickoff = DateTime.now().difference(m.date).inMinutes;
+    if (elapsedFromKickoff > 150) return tr('live.minute_ft');
+    int mins;
+    if (upMin == 0) {
+      mins = elapsedFromKickoff.clamp(1, 45);
+    } else {
+      var advance = upMin;
+      final asOf = ld?.asOf;
+      if (asOf != null) {
+        final since = DateTime.now().difference(asOf).inSeconds;
+        if (since > 0) {
+          final addMin = (since ~/ 60).clamp(0, 2);
+          advance = upMin + addMin;
+        }
+      }
+      final period = ld?.periodLabel ?? '';
+      if (period == '1H' && upMin < 45) {
+        if (advance > 45) advance = 45;
+      } else if (period != '1H' && upMin < 90) {
+        if (advance > 90) advance = 90;
+      }
+      mins = advance;
+    }
+    if (mins < 1) mins = 1;
+    if (mins > 90) return '90+${mins - 90}\'';
+    if (mins > 45 && (ld?.periodLabel == '1H')) return '45+${mins - 45}\'';
+    return "$mins'";
+  }
 
   Widget _bigScore(int v, bool locked) {
     return Text(
@@ -1133,17 +1376,9 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     );
   }
 
-  Widget _scoreGrid() {
+  /// 一次性对波胆按主/平/客分类+排序,build 直接读缓存。
+  void _rebuildCSGridCache() {
     final scores = _odds?.correctScore ?? const [];
-    if (scores.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Center(
-          child: Text(tr('detail.odds_loading'),
-              style: const TextStyle(color: T.inkLo, fontSize: 13)),
-        ),
-      );
-    }
     final home = <ScoreOption>[];
     final away = <ScoreOption>[];
     final draw = <ScoreOption>[];
@@ -1164,6 +1399,32 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     home.sort((x, y) => x.price.compareTo(y.price));
     draw.sort((x, y) => x.price.compareTo(y.price));
     away.sort((x, y) => x.price.compareTo(y.price));
+    _sortedCSHome = home;
+    _sortedCSDraw = draw;
+    _sortedCSAway = away;
+    _sortedCSOther = other;
+    _csGridOddsRef = _odds;
+  }
+
+  Widget _scoreGrid() {
+    final scores = _odds?.correctScore ?? const [];
+    if (scores.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: Text(tr('detail.odds_loading'),
+              style: const TextStyle(color: T.inkLo, fontSize: 13)),
+        ),
+      );
+    }
+    // 仅在 _odds 对象引用变更时才重算(WS 每次推送替换整个 snapshot)
+    if (!identical(_csGridOddsRef, _odds)) {
+      _rebuildCSGridCache();
+    }
+    final home = _sortedCSHome;
+    final draw = _sortedCSDraw;
+    final away = _sortedCSAway;
+    final other = _sortedCSOther;
     final cols = [home, draw, away];
     final rowsCount = [home.length, draw.length, away.length].reduce((a, b) => a > b ? a : b);
     final rows = rowsCount.clamp(0, 6);
@@ -1197,7 +1458,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                                 locked: _locked,
                                 myStake: myStake,
                                 inSlip: inSlip,
-                                onTap: disabled ? null : () => setState(() => _selected = _BetSelection(
+                                onTap: disabled ? null : () => _trySelect(_BetSelection(
                                       marketType: MarketType.correctScore,
                                       score: opt.score,
                                       price: opt.price,
@@ -1214,7 +1475,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             ),
           if (other != null)
             Builder(builder: (_) {
-              final opt = other!;
+              final opt = other;
               final key = '${MarketType.correctScore}::${opt.score}';
               final myStake = _myBets[key];
               final disabled = _locked || myStake != null || opt.price <= 0;
@@ -1230,7 +1491,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 locked: _locked,
                 myStake: myStake,
                 inSlip: inSlip,
-                onTap: disabled ? null : () => setState(() => _selected = _BetSelection(
+                onTap: disabled ? null : () => _trySelect(_BetSelection(
                       marketType: MarketType.correctScore,
                       score: opt.score,
                       price: opt.price,
@@ -1248,9 +1509,11 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   // 老数据只有 line=2.5 一条 → picker 只显示一颗 chip,等价旧 UI。
   Widget _overUnderSection() {
     // 合并:overUnders 优先(多线),没有则 fallback 单条 overUnder。
-    final List<OverUnderLine> lines = _odds?.overUnders.isNotEmpty == true
+    final List<OverUnderLine> lines = (_odds?.overUnders.isNotEmpty == true
         ? _odds!.overUnders
-        : (_odds?.overUnder != null ? [_odds!.overUnder!] : const []);
+        : (_odds?.overUnder != null ? [_odds!.overUnder!] : const <OverUnderLine>[]))
+        .where((l) => l.over > 0 || l.under > 0)
+        .toList();
     if (lines.isEmpty) return const SizedBox.shrink();
 
     // 当前选中 line:
@@ -1269,9 +1532,14 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       selectedLine = lines.first.line;
     }
     final currentLine = lines.firstWhere((l) => (l.line - selectedLine).abs() < 0.01);
-    final lineFmt = currentLine.line.toStringAsFixed(1);
+    final lineFmt = _fmtLine(currentLine.line);
     final overScore = 'over@$lineFmt';
     final underScore = 'under@$lineFmt';
+    // 走地标识 + 当前比分 chip
+    final isLive = _match.isLive;
+    final curHome = _match.scores?.home ?? 0;
+    final curAway = _match.scores?.away ?? 0;
+    final curTotal = curHome + curAway;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
@@ -1287,9 +1555,27 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                 Text('${tr('detail.ou_title')} · $lineFmt ${tr('detail.ou_goals')}',
                     style: const TextStyle(
                         fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+                if (currentLine.isWalking) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFEFD5),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(tr('detail.walking_tag'),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFFD97706))),
+                  ),
+                ],
               ],
             ),
           ),
+          if (isLive && lines.any((l) => l.isWalking))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6, left: 2),
+              child: Text(tr('detail.ou_live_score').replaceAll('{home}', '$curHome').replaceAll('{away}', '$curAway').replaceAll('{total}', '$curTotal'),
+                  style: const TextStyle(fontSize: 11, color: T.inkLo)),
+            ),
           // line picker:多线时显示,单线时省略(等价旧 UI)。
           if (lines.length > 1) ...[
             Padding(
@@ -1297,10 +1583,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               child: Wrap(
                 spacing: 6,
                 children: lines.map((l) {
-                  final fmt = l.line.toStringAsFixed(1);
+                  final fmt = _fmtLine(l.line);
                   final sel = (l.line - selectedLine).abs() < 0.01;
                   return ChoiceChip(
-                    label: Text(fmt, style: TextStyle(
+                    label: Text(l.isWalking ? tr('detail.ou_chip_walking').replaceAll('{line}', fmt) : fmt, style: TextStyle(
                       fontSize: 12,
                       fontWeight: sel ? FontWeight.w800 : FontWeight.w600,
                       color: sel ? Colors.white : T.ink,
@@ -1308,8 +1594,8 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     selected: sel,
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    selectedColor: T.brandDeep,
-                    backgroundColor: const Color(0xFFEAF1F8),
+                    selectedColor: l.isWalking ? const Color(0xFFD97706) : T.brandDeep,
+                    backgroundColor: l.isWalking ? const Color(0xFFFFEFD5) : const Color(0xFFEAF1F8),
                     onSelected: (_) => setState(() {
                       // 切换 line 时,如果当前选了 over/under,把 selection 迁移到新 line。
                       if (_selected?.marketType == MarketType.overUnder25) {
@@ -1352,7 +1638,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::$overScore'),
                   locked: _locked,
                   accent: T.up,
-                  onTap: () => setState(() => _selected = _BetSelection(
+                  onTap: () => _trySelect(_BetSelection(
                         marketType: MarketType.overUnder25,
                         score: overScore,
                         price: currentLine.over,
@@ -1372,7 +1658,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.overUnder25}::$underScore'),
                   locked: _locked,
                   accent: T.down,
-                  onTap: () => setState(() => _selected = _BetSelection(
+                  onTap: () => _trySelect(_BetSelection(
                         marketType: MarketType.overUnder25,
                         score: underScore,
                         price: currentLine.under,
@@ -1405,7 +1691,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               .containsKey('${widget.match.id}::${MarketType.matchWinner}::$score'),
           locked: _locked,
           accent: accent,
-          onTap: () => setState(() => _selected = _BetSelection(
+          onTap: () => _trySelect(_BetSelection(
                 marketType: MarketType.matchWinner,
                 score: score,
                 price: price,
@@ -1446,19 +1732,51 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   // 让球(Asian Handicap)— line + home/away 两选项。
+  // 走地阶段(2026-05-25):后端在 odds.handicaps 提供 3 条 fair±0.5 line。
+  // 用户可在 picker 切换 line,选 home/away 下走地单(baseline 模式,下单时
+  // 服务端记录当前比分,settle 按 net 差判定)。
   Widget _handicapSection() {
-    final h = _odds?.handicap;
+    final walkingLines = _odds?.handicaps ?? const <HandicapMarket>[];
+    final isWalking = _match.isLive && walkingLines.isNotEmpty;
+    HandicapMarket? h;
+    if (isWalking) {
+      // 走地:从 walkingLines 里选 currentLine
+      double selectedLine;
+      if (_selected?.marketType == MarketType.asianHandicap) {
+        final s = _selected!.score;
+        final at = s.lastIndexOf('@');
+        selectedLine = at > 0 ? double.tryParse(s.substring(at + 1)) ?? walkingLines.first.line : walkingLines.first.line;
+      } else {
+        selectedLine = walkingLines.first.line;
+      }
+      if (!walkingLines.any((l) => (l.line - selectedLine).abs() < 0.01)) {
+        selectedLine = walkingLines.first.line;
+      }
+      h = walkingLines.firstWhere((l) => (l.line - selectedLine).abs() < 0.01);
+    } else {
+      h = _odds?.handicap;
+    }
     if (h == null) return const SizedBox.shrink();
-    final lineStr = h.line >= 0 ? '+${h.line.toStringAsFixed(1)}' : h.line.toStringAsFixed(1);
+    final curHome = _match.scores?.home ?? 0;
+    final curAway = _match.scores?.away ?? 0;
+    final lineStr = h.line > 0
+        ? '+${_fmtLine(h.line)}'
+        : h.line < 0
+            ? _fmtLine(h.line)
+            : '0';
     String homeHint, awayHint;
     if (h.line < 0) {
       // 主队让球
-      homeHint = tr('detail.ah_home_give').replaceAll('{n}', (-h.line).toStringAsFixed(1));
-      awayHint = tr('detail.ah_away_take').replaceAll('{n}', (-h.line).toStringAsFixed(1));
-    } else {
+      homeHint = tr('detail.ah_home_give').replaceAll('{n}', _fmtLine(-h.line));
+      awayHint = tr('detail.ah_away_take').replaceAll('{n}', _fmtLine(-h.line));
+    } else if (h.line > 0) {
       // 主队受让
-      homeHint = tr('detail.ah_home_take').replaceAll('{n}', h.line.toStringAsFixed(1));
-      awayHint = tr('detail.ah_away_give').replaceAll('{n}', h.line.toStringAsFixed(1));
+      homeHint = tr('detail.ah_home_take').replaceAll('{n}', _fmtLine(h.line));
+      awayHint = tr('detail.ah_away_give').replaceAll('{n}', _fmtLine(h.line));
+    } else {
+      // 平手盘
+      homeHint = tr('detail.ah_level');
+      awayHint = tr('detail.ah_level');
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
@@ -1488,118 +1806,163 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                           fontWeight: FontWeight.w800,
                           color: T.brandDeep)),
                 ),
+                if (isWalking) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFEFD5),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(tr('detail.walking_tag'),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFFD97706))),
+                  ),
+                ],
               ],
             ),
           ),
-          Row(
-            children: [
-              Expanded(
-                child: _BinaryBetTile(
-                  label: localizedTeam(widget.match.home, apiZh: widget.match.homeZh),
-                  hint: homeHint,
-                  price: h.home,
-                  selected: _selected?.marketType == MarketType.asianHandicap &&
-                      _selected?.score == 'home',
-                  myStake: _myBets['${MarketType.asianHandicap}::home'],
-                  inSlip: widget.state.betSlip.containsKey(
-                      '${widget.match.id}::${MarketType.asianHandicap}::home'),
-                  locked: _locked,
-                  accent: T.up,
-                  onTap: () => setState(() => _selected = _BetSelection(
-                        marketType: MarketType.asianHandicap,
-                        score: 'home',
-                        price: h.home,
-                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.home, apiZh: widget.match.homeZh)} $lineStr',
-                      )),
-                ),
+          if (isWalking)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6, left: 2),
+              child: Text(tr('detail.ah_baseline_info').replaceAll('{home}', '$curHome').replaceAll('{away}', '$curAway'),
+                  style: const TextStyle(fontSize: 11, color: T.inkLo)),
+            ),
+          if (isWalking && walkingLines.length > 1) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, left: 2),
+              child: Wrap(
+                spacing: 6,
+                children: walkingLines.map((l) {
+                  final fmt = l.line >= 0 ? '+${_fmtLine(l.line)}' : _fmtLine(l.line);
+                  final sel = (l.line - h!.line).abs() < 0.01;
+                  return ChoiceChip(
+                    label: Text(fmt, style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: sel ? FontWeight.w800 : FontWeight.w600,
+                      color: sel ? Colors.white : T.ink,
+                    )),
+                    selected: sel,
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    selectedColor: const Color(0xFFD97706),
+                    backgroundColor: const Color(0xFFFFEFD5),
+                    onSelected: (_) => setState(() {
+                      // 切换 line 时:如果当前选了 home/away,迁移到新 line。
+                      String? side;
+                      if (_selected?.marketType == MarketType.asianHandicap) {
+                        final s = _selected!.score;
+                        final at = s.lastIndexOf('@');
+                        side = at > 0 ? s.substring(0, at) : s;
+                        if (side != 'home' && side != 'away') side = null;
+                      }
+                      if (side != null) {
+                        final p = side == 'home' ? l.home : l.away;
+                        _selected = _BetSelection(
+                          marketType: MarketType.asianHandicap,
+                          score: '$side@$fmt',
+                          price: p,
+                          label: '${tr('detail.handicap_title')} · ${side == 'home' ? localizedTeam(widget.match.home, apiZh: widget.match.homeZh) : localizedTeam(widget.match.away, apiZh: widget.match.awayZh)} $fmt',
+                        );
+                      } else {
+                        _selected = _BetSelection(
+                          marketType: MarketType.asianHandicap,
+                          score: '__line_pick__@$fmt',
+                          price: 0,
+                          label: '',
+                        );
+                      }
+                    }),
+                  );
+                }).toList(),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _BinaryBetTile(
-                  label: localizedTeam(widget.match.away, apiZh: widget.match.awayZh),
-                  hint: awayHint,
-                  price: h.away,
-                  selected: _selected?.marketType == MarketType.asianHandicap &&
-                      _selected?.score == 'away',
-                  myStake: _myBets['${MarketType.asianHandicap}::away'],
-                  inSlip: widget.state.betSlip.containsKey(
-                      '${widget.match.id}::${MarketType.asianHandicap}::away'),
-                  locked: _locked,
-                  accent: T.down,
-                  onTap: () => setState(() => _selected = _BetSelection(
-                        marketType: MarketType.asianHandicap,
-                        score: 'away',
-                        price: h.away,
-                        label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.away, apiZh: widget.match.awayZh)} ${h.line >= 0 ? '-' : '+'}${(h.line.abs()).toStringAsFixed(1)}',
-                      )),
+            ),
+          ],
+          Builder(builder: (_) {
+            // 走地必须带 line(后端 odds.handicaps 多线匹配);赛前为兼容老路径不带 line。
+            final HandicapMarket hh = h!; // Dart 闭包内提升非空
+            final scoreHome = isWalking ? 'home@$lineStr' : 'home';
+            final scoreAway = isWalking ? 'away@$lineStr' : 'away';
+            final slipKeyHome = isWalking ? '${MarketType.asianHandicap}::home@$lineStr' : '${MarketType.asianHandicap}::home';
+            final slipKeyAway = isWalking ? '${MarketType.asianHandicap}::away@$lineStr' : '${MarketType.asianHandicap}::away';
+            return Row(
+              children: [
+                Expanded(
+                  child: _BinaryBetTile(
+                    label: localizedTeam(widget.match.home, apiZh: widget.match.homeZh),
+                    hint: homeHint,
+                    price: hh.home,
+                    selected: _selected?.marketType == MarketType.asianHandicap &&
+                        _selected?.score == scoreHome,
+                    myStake: _myBets[slipKeyHome],
+                    inSlip: widget.state.betSlip.containsKey(
+                        '${widget.match.id}::$slipKeyHome'),
+                    locked: _locked,
+                    accent: T.up,
+                    onTap: () => _trySelect(_BetSelection(
+                          marketType: MarketType.asianHandicap,
+                          score: scoreHome,
+                          price: hh.home,
+                          label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.home, apiZh: widget.match.homeZh)} ${_ahLineLabel(hh.line)}',
+                        )),
+                  ),
                 ),
-              ),
-            ],
-          ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _BinaryBetTile(
+                    label: localizedTeam(widget.match.away, apiZh: widget.match.awayZh),
+                    hint: awayHint,
+                    price: hh.away,
+                    selected: _selected?.marketType == MarketType.asianHandicap &&
+                        _selected?.score == scoreAway,
+                    myStake: _myBets[slipKeyAway],
+                    inSlip: widget.state.betSlip.containsKey(
+                        '${widget.match.id}::$slipKeyAway'),
+                    locked: _locked,
+                    accent: T.down,
+                    onTap: () => _trySelect(_BetSelection(
+                          marketType: MarketType.asianHandicap,
+                          score: scoreAway,
+                          price: hh.away,
+                          label: '${tr('detail.handicap_title')} · ${localizedTeam(widget.match.away, apiZh: widget.match.awayZh)} ${_ahLineLabel(-hh.line)}',
+                        )),
+                  ),
+                ),
+              ],
+            );
+          }),
         ],
       ),
     );
   }
 
-  // ── 双胜 Double Chance(1X / X2 / 12)──────────────────────────────
-  // 三个选项一行,从 1X2 派生,价格由后端 DeriveDoubleChance 算出。
-  Widget _doubleChanceSection() {
-    final dc = _odds?.doubleChance;
-    if (dc == null) return const SizedBox.shrink();
-    Widget tile(String key, String label, double price) {
-      return Expanded(
-        child: _BinaryBetTile(
-          label: label,
-          hint: '',
-          price: price,
-          selected: _selected?.marketType == MarketType.doubleChance &&
-                    _selected?.score == key,
-          myStake: _myBets['${MarketType.doubleChance}::$key'],
-          inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.doubleChance}::$key'),
-          locked: _locked,
-          accent: T.brandDeep,
-          onTap: () => setState(() => _selected = _BetSelection(
-                marketType: MarketType.doubleChance,
-                score: key,
-                price: price,
-                label: '${tr('dc.short')} · $label',
-              )),
-        ),
-      );
+  // 上半场大小球(走地 only,minute<41 时开盘)
+  Widget _htOverUnderSection() {
+    if (!_isLive) return const SizedBox.shrink();
+    final htLines = (_odds?.htOverUnders ?? const <OverUnderLine>[])
+        .where((l) => l.over > 0 || l.under > 0)
+        .toList();
+    if (htLines.isEmpty) return const SizedBox.shrink();
+    // 当前选中 line
+    double selectedLine;
+    if (_selected?.marketType == MarketType.htOverUnder) {
+      final s = _selected!.score;
+      final at = s.lastIndexOf('@');
+      selectedLine = at > 0 ? double.tryParse(s.substring(at + 1)) ?? htLines.first.line : htLines.first.line;
+    } else {
+      selectedLine = htLines.first.line;
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8, left: 2),
-            child: Row(
-              children: [
-                const Icon(Icons.alt_route, size: 14, color: T.brandDeep),
-                const SizedBox(width: 5),
-                Text(tr('dc.title'),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
-              ],
-            ),
-          ),
-          Row(children: [
-            tile('1X', tr('dc.1x'), dc.homeOrDraw),
-            const SizedBox(width: 8),
-            tile('X2', tr('dc.x2'), dc.drawOrAway),
-            const SizedBox(width: 8),
-            tile('12', tr('dc.12'), dc.homeOrAway),
-          ]),
-        ],
-      ),
-    );
-  }
+    if (!htLines.any((l) => (l.line - selectedLine).abs() < 0.01)) {
+      selectedLine = htLines.first.line;
+    }
+    final cur = htLines.firstWhere((l) => (l.line - selectedLine).abs() < 0.01);
+    final lineFmt = _fmtLine(cur.line);
+    final scoreOver = 'over@$lineFmt';
+    final scoreUnder = 'under@$lineFmt';
+    final periods = _match.scores?.periods;
+    final ht = periods?['1H'];
+    final htHome = ht?.home ?? _match.scores?.home ?? 0;
+    final htAway = ht?.away ?? _match.scores?.away ?? 0;
 
-  // ── 平退本 Draw No Bet(主 / 客)─────────────────────────────────
-  // 两选项;平局退本金。
-  Widget _drawNoBetSection() {
-    final dnb = _odds?.drawNoBet;
-    if (dnb == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 0),
       child: Column(
@@ -1609,51 +1972,107 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
             padding: const EdgeInsets.only(bottom: 8, left: 2),
             child: Row(
               children: [
-                const Icon(Icons.compare_arrows, size: 14, color: T.brandDeep),
+                const Icon(Icons.hourglass_top, size: 14, color: Color(0xFFD97706)),
                 const SizedBox(width: 5),
-                Text(tr('dnb.title'),
+                Text(tr('detail.htou_title').replaceAll('{line}', lineFmt),
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: T.ink)),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFEFD5),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(tr('detail.walking_tag'),
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFFD97706))),
+                ),
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6, left: 2),
+            child: Text(tr('detail.htou_score_info').replaceAll('{home}', '$htHome').replaceAll('{away}', '$htAway'),
+                style: const TextStyle(fontSize: 11, color: T.inkLo)),
+          ),
+          if (htLines.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8, left: 2),
+              child: Wrap(
+                spacing: 6,
+                children: htLines.map((l) {
+                  final fmt = _fmtLine(l.line);
+                  final sel = (l.line - selectedLine).abs() < 0.01;
+                  return ChoiceChip(
+                    label: Text(fmt, style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: sel ? FontWeight.w800 : FontWeight.w600,
+                      color: sel ? Colors.white : T.ink,
+                    )),
+                    selected: sel,
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    selectedColor: const Color(0xFFD97706),
+                    backgroundColor: const Color(0xFFFFEFD5),
+                    onSelected: (_) => setState(() {
+                      String? side;
+                      if (_selected?.marketType == MarketType.htOverUnder) {
+                        final s = _selected!.score;
+                        final at = s.lastIndexOf('@');
+                        side = at > 0 ? s.substring(0, at) : s;
+                        if (side != 'over' && side != 'under') side = null;
+                      }
+                      if (side != null) {
+                        final p = side == 'over' ? l.over : l.under;
+                        _selected = _BetSelection(
+                          marketType: MarketType.htOverUnder,
+                          score: '$side@$fmt',
+                          price: p,
+                          label: side == 'over'
+                              ? tr('detail.htou_over_sel').replaceAll('{line}', fmt)
+                              : tr('detail.htou_under_sel').replaceAll('{line}', fmt),
+                        );
+                      }
+                    }),
+                  );
+                }).toList(),
+              ),
+            ),
           Row(children: [
             Expanded(
               child: _BinaryBetTile(
-                label: tr('detail.win_home'),
-                hint: tr('dnb.short'),
-                price: dnb.home,
-                selected: _selected?.marketType == MarketType.drawNoBet &&
-                          _selected?.score == 'home',
-                myStake: _myBets['${MarketType.drawNoBet}::home'],
-                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.drawNoBet}::home'),
+                label: tr('detail.htou_over_label').replaceAll('{line}', lineFmt),
+                hint: tr('detail.htou_over_hint').replaceAll('{line}', lineFmt),
+                price: cur.over,
+                selected: _selected?.marketType == MarketType.htOverUnder && _selected?.score == scoreOver,
+                myStake: _myBets['${MarketType.htOverUnder}::$scoreOver'],
+                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.htOverUnder}::$scoreOver'),
                 locked: _locked,
-                accent: T.up,
-                onTap: () => setState(() => _selected = _BetSelection(
-                      marketType: MarketType.drawNoBet,
-                      score: 'home',
-                      price: dnb.home,
-                      label: '${tr('dnb.short')} · ${tr('detail.win_home')}',
-                    )),
+                accent: const Color(0xFFD97706),
+                onTap: () => _trySelect(_BetSelection(
+                  marketType: MarketType.htOverUnder,
+                  score: scoreOver,
+                  price: cur.over,
+                  label: tr('detail.htou_over_sel').replaceAll('{line}', lineFmt),
+                )),
               ),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: _BinaryBetTile(
-                label: tr('detail.win_away'),
-                hint: tr('dnb.short'),
-                price: dnb.away,
-                selected: _selected?.marketType == MarketType.drawNoBet &&
-                          _selected?.score == 'away',
-                myStake: _myBets['${MarketType.drawNoBet}::away'],
-                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.drawNoBet}::away'),
+                label: tr('detail.htou_under_label').replaceAll('{line}', lineFmt),
+                hint: tr('detail.htou_under_hint').replaceAll('{line}', lineFmt),
+                price: cur.under,
+                selected: _selected?.marketType == MarketType.htOverUnder && _selected?.score == scoreUnder,
+                myStake: _myBets['${MarketType.htOverUnder}::$scoreUnder'],
+                inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.htOverUnder}::$scoreUnder'),
                 locked: _locked,
-                accent: T.down,
-                onTap: () => setState(() => _selected = _BetSelection(
-                      marketType: MarketType.drawNoBet,
-                      score: 'away',
-                      price: dnb.away,
-                      label: '${tr('dnb.short')} · ${tr('detail.win_away')}',
-                    )),
+                accent: const Color(0xFFD97706),
+                onTap: () => _trySelect(_BetSelection(
+                  marketType: MarketType.htOverUnder,
+                  score: scoreUnder,
+                  price: cur.under,
+                  label: tr('detail.htou_under_sel').replaceAll('{line}', lineFmt),
+                )),
               ),
             ),
           ]),
@@ -1695,7 +2114,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.btts}::yes'),
                   locked: _locked,
                   accent: T.up,
-                  onTap: () => setState(() => _selected = _BetSelection(
+                  onTap: () => _trySelect(_BetSelection(
                         marketType: MarketType.btts,
                         score: 'yes',
                         price: btts.yes,
@@ -1715,7 +2134,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                   inSlip: widget.state.betSlip.containsKey('${widget.match.id}::${MarketType.btts}::no'),
                   locked: _locked,
                   accent: T.down,
-                  onTap: () => setState(() => _selected = _BetSelection(
+                  onTap: () => _trySelect(_BetSelection(
                         marketType: MarketType.btts,
                         score: 'no',
                         price: btts.no,
@@ -1734,20 +2153,39 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   /// 紧凑下注栏 — 默认折叠态,只展示一个按钮。
   /// 选中波胆/玩法之前:灰按钮"请先选择赔率",不可点
   /// 选中后:亮蓝按钮"立即下注 · {label} @ {odds}",点击弹出 [_buildBetSheet]
-  /// 滚球封盘期间:倒计时占位,不可点
+  /// 滚球封盘期间:倒计时占位,不可点(用 ValueListenableBuilder 隔离秒数重建)
+  /// 85+ 分钟终场封盘:静态"已封盘",不可点
   Widget _betDrawer() {
-    final sel = _selected;
-    final ready = sel != null && !_liveLocked;
-    String label;
+    // 85+ 分钟终场封盘优先级最高,所有按钮统一禁用展示
+    if (_marketsClosed) {
+      return _betDrawerShell(
+        label: tr('detail.live_locked_title'),
+        ready: false,
+        onTap: null,
+      );
+    }
+    // 封盘倒计时走 ValueNotifier 路径,避免每秒全页 setState
     if (_liveLocked) {
-      final secs = (_odds!.lockUntil!.difference(DateTime.now()).inSeconds + 1)
-          .clamp(0, 99);
-      label = tr('detail.bet_live_locked').replaceAll('{secs}', '$secs');
-    } else if (sel == null) {
+      return ValueListenableBuilder<int>(
+        valueListenable: _lockSecsNotifier,
+        builder: (_, secs, __) {
+          final label = tr('detail.bet_live_locked').replaceAll('{secs}', '$secs');
+          return _betDrawerShell(label: label, ready: false, onTap: null);
+        },
+      );
+    }
+    final sel = _selected;
+    final ready = sel != null;
+    String label;
+    if (sel == null) {
       label = tr('detail.bet_lock_pending');
     } else {
       label = '${tr('detail.bet_quick_open')} · ${sel.label} @ ${sel.price.toStringAsFixed(2)}';
     }
+    return _betDrawerShell(label: label, ready: ready, onTap: ready ? _showBetSheet : null);
+  }
+
+  Widget _betDrawerShell({required String label, required bool ready, required VoidCallback? onTap}) {
     return SafeArea(
       top: false,
       child: Container(
@@ -1767,7 +2205,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(14),
-            onTap: ready ? _showBetSheet : null,
+            onTap: onTap,
             child: Center(
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -1831,6 +2269,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   void _addToSlip() {
     final sel = _selected;
     if (sel == null) return;
+    if (_marketsClosed) {
+      Toast.show(context, tr('detail.live_locked_title'), kind: 'warn');
+      return;
+    }
     final m = _match;
     widget.state.betSlip.add(BetSelection(
       matchId: m.id,

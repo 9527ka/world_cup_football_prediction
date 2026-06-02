@@ -1127,7 +1127,12 @@ class RulesPage extends StatelessWidget {
     _RuleSection(
       title: 'feat.rules.s5.title',
       icon: Icons.calculate_rounded,
-      items: ['feat.rules.s5.i1', 'feat.rules.s5.i2', 'feat.rules.s5.i3'],
+      items: ['feat.rules.s5.i1', 'feat.rules.s5.i2', 'feat.rules.s5.i3', 'feat.rules.s5.i4'],
+    ),
+    _RuleSection(
+      title: 'feat.rules.s8.title',
+      icon: Icons.timer_rounded,
+      items: ['feat.rules.s8.i1', 'feat.rules.s8.i2', 'feat.rules.s8.i3', 'feat.rules.s8.i4'],
     ),
     _RuleSection(
       title: 'feat.rules.s6.title',

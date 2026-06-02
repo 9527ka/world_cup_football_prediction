@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/i18n.dart';
 import '../theme/tokens.dart';
 
-enum BetStatus { pending, live, won, lost, voided, cashedOut }
+enum BetStatus { pending, live, won, lost, voided, cashedOut, halfWon, halfLost, pushed }
 
 class StatusPill extends StatelessWidget {
   const StatusPill({super.key, required this.status, this.label});
@@ -124,6 +124,12 @@ _PillCfg _cfg(BetStatus s) {
       return const _PillCfg('pill.voided', Color(0x248C9CB1), T.inkMd, T.inkLo);
     case BetStatus.cashedOut:
       return const _PillCfg('pill.cashed_out', Color(0x242CD7FD), T.brandDeep, T.brand);
+    case BetStatus.halfWon:
+      return const _PillCfg('pill.half_won', Color(0x242BD475), T.upDark, T.up);
+    case BetStatus.halfLost:
+      return const _PillCfg('pill.half_lost', Color(0xFFEEF2F7), T.inkLo, T.inkLo);
+    case BetStatus.pushed:
+      return const _PillCfg('pill.pushed', Color(0x24F5B544), Color(0xFFC7861E), T.warn);
   }
 }
 
@@ -140,6 +146,12 @@ BetStatus betStatusFromString(String s) {
       return BetStatus.live;
     case 'cashed_out':
       return BetStatus.cashedOut;
+    case 'half_won':
+      return BetStatus.halfWon;
+    case 'half_lost':
+      return BetStatus.halfLost;
+    case 'pushed':
+      return BetStatus.pushed;
     default:
       return BetStatus.pending;
   }

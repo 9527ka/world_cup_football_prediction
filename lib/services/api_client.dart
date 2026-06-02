@@ -99,6 +99,12 @@ class ApiClient {
     }
   }
 
+  // ── Timeout wrappers — all public HTTP calls must go through these ──
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) =>
+      http.get(uri, headers: headers).timeout(_httpTimeout);
+  Future<http.Response> _post(Uri uri, {Map<String, String>? headers, Object? body}) =>
+      http.post(uri, headers: headers, body: body).timeout(_httpTimeout);
+
   Future<http.Response> _authGet(Uri uri) async {
     var r = await http.get(uri, headers: _headers(auth: true)).timeout(_httpTimeout);
     if (r.statusCode == 401 && onTokenExpired != null) {
@@ -131,7 +137,7 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> loginTelegram(String initData, {String startParam = ''}) async {
-    final r = await http.post(
+    final r = await _post(
       _uri('/api/auth/telegram'),
       headers: _headers(),
       body: jsonEncode({
@@ -154,7 +160,7 @@ class ApiClient {
   Future<Map<String, dynamic>> loginTelegramWeb(Map<String, dynamic> payload, {String startParam = ''}) async {
     final body = Map<String, dynamic>.from(payload);
     if (startParam.isNotEmpty) body['startParam'] = startParam;
-    final r = await http.post(
+    final r = await _post(
       _uri('/api/auth/telegram-web'),
       headers: _headers(),
       body: jsonEncode(body),
@@ -174,7 +180,7 @@ class ApiClient {
     required String password,
     required String displayName,
   }) async {
-    final r = await http.post(
+    final r = await _post(
       _uri('/api/auth/register'),
       headers: _headers(),
       body: jsonEncode({
@@ -209,7 +215,7 @@ class ApiClient {
     required String email,
     required String password,
   }) async {
-    final r = await http.post(
+    final r = await _post(
       _uri('/api/auth/login'),
       headers: _headers(),
       body: jsonEncode({'email': email, 'password': password}),
@@ -229,7 +235,7 @@ class ApiClient {
   /// 后端通过 env `TELEGRAM_BOT_USERNAME` 提供 username;botId 从 token 前缀解析。
   /// 失败 / 空值时调用方应禁用浏览器登录按钮 + 提示 BotFather 域名未配置。
   Future<AuthBotConfig> authConfig() async {
-    final r = await http.get(_uri('/api/auth/config'), headers: _headers());
+    final r = await _get(_uri('/api/auth/config'), headers: _headers());
     _check(r);
     final body = jsonDecode(r.body) as Map<String, dynamic>;
     return AuthBotConfig(
@@ -258,7 +264,7 @@ class ApiClient {
     if (league != null && league.isNotEmpty) q['league'] = league;
     if (search != null && search.isNotEmpty) q['q'] = search;
     if (status != null && status.isNotEmpty) q['status'] = status;
-    final r = await http.get(_uri('/api/matches', q));
+    final r = await _get(_uri('/api/matches', q));
     _check(r);
     final body = jsonDecode(r.body) as Map<String, dynamic>;
     final list = (body['matches'] as List?) ?? [];
@@ -274,7 +280,7 @@ class ApiClient {
   /// Includes off-season leagues with 0 matches so the chip filter can show
   /// them with a "暂无比赛" hint.
   Future<List<LeagueInfo>> configLeagues() async {
-    final r = await http.get(_uri('/api/config/leagues'));
+    final r = await _get(_uri('/api/config/leagues'));
     _check(r);
     final body = jsonDecode(r.body) as Map<String, dynamic>;
     final list = (body['leagues'] as List?) ?? [];
@@ -289,19 +295,19 @@ class ApiClient {
   }
 
   Future<MatchInfo> getMatch(int id) async {
-    final r = await http.get(_uri('/api/match/$id'));
+    final r = await _get(_uri('/api/match/$id'));
     _check(r);
     return MatchInfo.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
 
   Future<OddsSnapshot> getOdds(int id) async {
-    final r = await http.get(_uri('/api/odds/$id'));
+    final r = await _get(_uri('/api/odds/$id'));
     _check(r);
     return OddsSnapshot.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
 
   Future<OddsHistory> getOddsHistory(int id, {int limit = 60}) async {
-    final r = await http.get(_uri('/api/odds/$id/history', {'limit': '$limit'}));
+    final r = await _get(_uri('/api/odds/$id/history', {'limit': '$limit'}));
     _check(r);
     return OddsHistory.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
@@ -311,7 +317,7 @@ class ApiClient {
   /// Returns ({}, {}) when the provider doesn't support it.
   Future<({Map<String, int> home, Map<String, int> away})> getMatchStats(
       int id) async {
-    final r = await http.get(_uri('/api/match/$id/stats'));
+    final r = await _get(_uri('/api/match/$id/stats'));
     if (r.statusCode == 503) {
       return (home: <String, int>{}, away: <String, int>{});
     }
@@ -326,7 +332,7 @@ class ApiClient {
   /// Per-fixture event timeline: goals, cards, subs with elapsed minute.
   /// Powers the "进球时间 / 判罚时间" sections in match detail.
   Future<List<MatchEvent>> getMatchEvents(int id) async {
-    final r = await http.get(_uri('/api/match/$id/events'));
+    final r = await _get(_uri('/api/match/$id/events'));
     if (r.statusCode == 503) return [];
     _check(r);
     final m = jsonDecode(r.body) as Map<String, dynamic>;
@@ -354,34 +360,6 @@ class ApiClient {
     final list = ((m['streams'] as List?) ?? const [])
         .cast<Map<String, dynamic>>();
     return (streams: list, fetchedAt: '${m['fetchedAt'] ?? ''}');
-  }
-
-  /// Cash-out a single pending prediction. Returns the actual USDT amount
-  /// credited (server quotes against latest odds, not what UI showed).
-  Future<({double cashedOut, double currentOdds, Prediction prediction})>
-      cashOutPrediction(int id) async {
-    final r = await _authPost(_uri('/api/predictions/$id/cashout'));
-    _check(r);
-    final m = jsonDecode(r.body) as Map<String, dynamic>;
-    return (
-      cashedOut: ((m['cashedOut'] ?? 0) as num).toDouble(),
-      currentOdds: ((m['currentOdds'] ?? 0) as num).toDouble(),
-      prediction:
-          Prediction.fromJson(m['prediction'] as Map<String, dynamic>),
-    );
-  }
-
-  /// 串关提前结算 — 后端按剩余 leg 当前赔率累乘报价。
-  /// 返回 cashedOut 实际金额 + pendingLegs 数量。
-  Future<({double cashedOut, int pendingLegs, Parlay parlay})> cashOutParlay(int id) async {
-    final r = await _authPost(_uri('/api/parlays/$id/cashout'));
-    _check(r);
-    final m = jsonDecode(r.body) as Map<String, dynamic>;
-    return (
-      cashedOut: ((m['cashedOut'] ?? 0) as num).toDouble(),
-      pendingLegs: ((m['pendingLegs'] ?? 0) as num).toInt(),
-      parlay: Parlay.fromJson(m['parlay'] as Map<String, dynamic>),
-    );
   }
 
   /// 主动撤单 — 退本金,prediction 标记 cancelled。
@@ -428,7 +406,7 @@ class ApiClient {
     String period = 'all',
   }) async {
     final q = {'limit': '$limit', 'period': period};
-    final r = await http.get(_uri('/api/leaderboard', q));
+    final r = await _get(_uri('/api/leaderboard', q));
     _check(r);
     final list = jsonDecode(r.body) as List;
     return list.cast<Map<String, dynamic>>().map(LeaderboardEntry.fromJson).toList();
@@ -497,7 +475,7 @@ class ApiClient {
   /// Public team-name / logo overrides edited from the admin console.
   /// Returns map keyed by upstream English team name → {nameZh, nameEn, logoUrl}.
   Future<Map<String, Map<String, String>>> teamOverrides() async {
-    final r = await http.get(_uri('/api/team-overrides'));
+    final r = await _get(_uri('/api/team-overrides'));
     _check(r);
     final m = jsonDecode(r.body) as Map<String, dynamic>;
     final raw = (m['teams'] as Map?) ?? const {};
@@ -515,14 +493,14 @@ class ApiClient {
   }
 
   Future<List<String>> announcements() async {
-    final r = await http.get(_uri('/api/home/announcements'));
+    final r = await _get(_uri('/api/home/announcements'));
     _check(r);
     final m = jsonDecode(r.body) as Map<String, dynamic>;
     return ((m['items'] ?? []) as List).cast<String>();
   }
 
   Future<List<HotMatch>> hotMatches({int limit = 4}) async {
-    final r = await http.get(_uri('/api/home/hot-matches', {'limit': '$limit'}));
+    final r = await _get(_uri('/api/home/hot-matches', {'limit': '$limit'}));
     _check(r);
     final list = jsonDecode(r.body) as List;
     return list.cast<Map<String, dynamic>>().map(HotMatch.fromJson).toList();
@@ -530,7 +508,7 @@ class ApiClient {
 
   /// 首页"最近赛果"区块 — 已结束比赛(默认 3 天 / 10 条),含终场比分。
   Future<List<MatchInfo>> recentSettled({int days = 3, int limit = 10}) async {
-    final r = await http.get(_uri('/api/home/recent-settled', {
+    final r = await _get(_uri('/api/home/recent-settled', {
       'days': '$days',
       'limit': '$limit',
     }));
@@ -540,7 +518,7 @@ class ApiClient {
   }
 
   Future<HomeConfig> homeConfig() async {
-    final r = await http.get(_uri('/api/home/config'));
+    final r = await _get(_uri('/api/home/config'));
     _check(r);
     return HomeConfig.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
@@ -665,6 +643,9 @@ String _zhError(String raw) {
     'match already started or settled': 'err.match_started_or_settled',
     'match already settled': 'err.match_already_settled',
     'match voided': 'err.match_voided',
+    'match in extra time': 'err.match_extra_time',
+    'match in extra time, wait for settlement': 'err.match_extra_time',
+    'handicap closed during live': 'err.handicap_live_closed',
     'no odds offered for this match': 'err.no_odds_for_match',
     'odds not available': 'err.odds_unavailable',
     'current odds unavailable': 'err.current_odds_unavailable',

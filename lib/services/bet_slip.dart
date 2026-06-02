@@ -80,6 +80,8 @@ class BetSlip extends ChangeNotifier {
       matchId: old.matchId,
       home: old.home,
       away: old.away,
+      homeZh: old.homeZh,
+      awayZh: old.awayZh,
       leagueName: old.leagueName,
       leagueSlug: old.leagueSlug,
       marketType: old.marketType,

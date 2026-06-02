@@ -264,6 +264,7 @@ class TeamCrest extends StatelessWidget {
               fit: BoxFit.contain,
               cacheWidth: 96,
               cacheHeight: 96,
+              gaplessPlayback: true,
               errorBuilder: (_, __, ___) => fallback,
               loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
             ),
@@ -303,6 +304,7 @@ class TeamCrest extends StatelessWidget {
       fit: BoxFit.contain,
       cacheWidth: 96,
       cacheHeight: 96,
+      gaplessPlayback: true,
       errorBuilder: (_, __, ___) => fallback,
       loadingBuilder: (ctx, child, p) => p == null ? child : fallback,
     );

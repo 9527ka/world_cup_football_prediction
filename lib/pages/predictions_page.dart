@@ -32,12 +32,6 @@ class _PredictionsPageState extends State<PredictionsPage> {
   String _topTab = 'single'; // 'single' | 'parlay'
   late Future<_MyBetsBundle> _future;
 
-  // cashout 正在进行中的注单 id —— 防止用户连点同一条注单多次,后端虽然有
-  // status guard 不会重复派钱,但前端会弹多次 Toast。Set 而非 bool 因为
-  // 列表里可能同时有多条 pending 注单。
-  final Set<int> _cashingOutBets = <int>{};
-  final Set<int> _cashingOutParlays = <int>{};
-
   @override
   void initState() {
     super.initState();
@@ -333,77 +327,6 @@ class _PredictionsPageState extends State<PredictionsPage> {
   /// 实际上 cashout = stake×oap/currentOdds×0.92。本地不知 currentOdds,
   /// 我们干脆显示 "约 X.XX USDT(以服务端实际为准)" — X = stake × 0.92,
   /// 即极端最差情况),让用户有心理预期;后端用真实 currentOdds 报价。
-  Future<void> _confirmCashout(BetRow b) async {
-    final pred = b.prediction;
-    final estimateLow = pred.stake * 0.92;
-    final estimateHigh = pred.stake * pred.oddsAtPlace * 0.92; // 完全锁定时的上限
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(tr('pred.cashout_title'),
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${localizedTeam(b.home, apiZh: b.homeZh)} vs ${localizedTeam(b.away, apiZh: b.awayZh)}',
-                style: const TextStyle(fontSize: 13, color: T.inkMd)),
-            const SizedBox(height: 6),
-            Text('${_selectionLabel(pred.marketType, pred.score)} @ ${pred.oddsAtPlace.toStringAsFixed(2)}',
-                style: const TextStyle(fontSize: 13, color: T.inkMd)),
-            const SizedBox(height: 6),
-            Text('${tr('pred.stake_label')}: ${pred.stake.toStringAsFixed(0)} USDT',
-                style: const TextStyle(fontSize: 13, color: T.inkMd)),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0x14F5B544),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                tr('pred.cashout_desc'),
-                style: const TextStyle(fontSize: 11, color: Color(0xFFC7861E), fontWeight: FontWeight.w600),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${tr('pred.cashout_estimate')}: ${estimateLow.toStringAsFixed(2)} ~ ${estimateHigh.toStringAsFixed(2)} USDT',
-              style: const TextStyle(fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text(tr('pred.cashout_cancel'), style: const TextStyle(color: T.inkLo)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(tr('pred.cashout_confirm'), style: const TextStyle(color: T.brandDeep, fontWeight: FontWeight.w800)),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    if (_cashingOutBets.contains(pred.id)) return; // 重入保险:确认框关闭间隙再点
-    setState(() => _cashingOutBets.add(pred.id));
-    try {
-      final result = await widget.state.api.cashOutPrediction(pred.id);
-      if (!mounted) return;
-      Toast.success(context,
-          tr('pred.cashout_ok').replaceAll('{n}', result.cashedOut.toStringAsFixed(2)));
-      setState(() => _future = _load());
-    } catch (e) {
-      if (!mounted) return;
-      Toast.error(context, e.toString());
-    } finally {
-      if (mounted) setState(() => _cashingOutBets.remove(pred.id));
-    }
-  }
-
   void _onFooterTap(BetRow b, bool isPending) {
     if (isPending) {
       showDialog(
@@ -672,9 +595,11 @@ class _PredictionsPageState extends State<PredictionsPage> {
     final fmt = _predFmtDate;
     final pred = b.prediction;
     final eff = b.effectiveStatus;
-    // half_won 视觉上算赢(让卡片绿色徽章+正向 payout);half_lost 算输(红色)。
+    // half_won 视觉上算赢(让卡片绿色徽章+正向 payout);half_lost 算输(红色);pushed 退本。
     final isWon = eff == 'won' || eff == 'half_won';
-    final isLost = eff == 'lost' || eff == 'half_lost';
+    final isLost = eff == 'lost';
+    final isHalfLost = eff == 'half_lost';
+    final isPushed = eff == 'pushed';
     final isLive = eff == 'live';
     final isPending = eff == 'pending';
 
@@ -731,7 +656,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
               child: Row(
                 children: [
-                  TeamCrest(name: b.home, leagueSlug: b.leagueSlug, size: 26),
+                  TeamCrest(name: b.home, id: b.homeId > 0 ? b.homeId : null, leagueSlug: b.leagueSlug, size: 26),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text.rich(
@@ -758,7 +683,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  TeamCrest(name: b.away, leagueSlug: b.leagueSlug, size: 26),
+                  TeamCrest(name: b.away, id: b.awayId > 0 ? b.awayId : null, leagueSlug: b.leagueSlug, size: 26),
                 ],
               ),
             ),
@@ -780,36 +705,55 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               begin: Alignment.topCenter,
                               end: Alignment.bottomCenter,
                               colors: [T.up, T.upDark])
-                          : isLost
+                          : (isLost || isHalfLost)
                               ? null
                               : T.brandGradientShort,
-                      color: isLost ? const Color(0xFFEEF2F7) : null,
+                      color: (isLost || isHalfLost) ? const Color(0xFFEEF2F7) : null,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
                       _selectionLabel(pred.marketType, pred.score),
                       style: TextStyle(
-                        color: isLost ? T.inkLo : Colors.white,
+                        color: (isLost || isHalfLost) ? T.inkLo : Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
                         fontFamily: pred.marketType == MarketType.correctScore
                             ? T.fontMono
                             : null,
-                        decoration: isLost ? TextDecoration.lineThrough : null,
+                        decoration: (isLost || isHalfLost) ? TextDecoration.lineThrough : null,
                       ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: isLive && b.liveHome != null
-                        ? Column(
+                    child: Row(
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(tr('detail.bet_odds'),
+                                style: const TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                    color: T.inkLo)),
+                            Text(pred.oddsAtPlace.toStringAsFixed(2),
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w800,
+                                    color: T.gold,
+                                    fontFamily: T.fontMono)),
+                          ],
+                        ),
+                        if (b.liveHome != null && (isLive || isWon || isLost || isHalfLost || isPushed)) ...[
+                          const SizedBox(width: 16),
+                          Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(tr('pred.live_score'),
-                                  style: const TextStyle(
+                              Text(isLive ? tr('pred.live_score') : tr('pred.final_score'),
+                                  style: TextStyle(
                                       fontSize: 9,
                                       fontWeight: FontWeight.w700,
-                                      color: T.down)),
+                                      color: isLive ? T.down : T.inkLo)),
                               Text('${b.liveHome}:${b.liveAway}',
                                   style: const TextStyle(
                                       fontSize: 14,
@@ -817,23 +761,10 @@ class _PredictionsPageState extends State<PredictionsPage> {
                                       color: T.brandDeep,
                                       fontFamily: T.fontMono)),
                             ],
-                          )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(tr('detail.bet_odds'),
-                                  style: const TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w600,
-                                      color: T.inkLo)),
-                              Text(pred.oddsAtPlace.toStringAsFixed(2),
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w800,
-                                      color: T.gold,
-                                      fontFamily: T.fontMono)),
-                            ],
                           ),
+                        ],
+                      ],
+                    ),
                   ),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -845,11 +776,13 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               fontWeight: FontWeight.w600)),
                       const SizedBox(height: 2),
                       Text(
-                        isLost ? '—' : (isWon ? '+' : '') + _predFmtBal.format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
+                        isLost
+                            ? '—'
+                            : (isWon ? '+' : '') + _predFmtBal.format(pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace),
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w800,
-                          color: isWon ? T.up : isLost ? T.inkLo : T.ink,
+                          color: isWon ? T.up : (isLost || isHalfLost) ? T.inkLo : (isPushed ? T.warn : T.ink),
                           fontFamily: T.fontMono,
                         ),
                       ),
@@ -883,34 +816,15 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600),
                         ),
                       ),
-                      // 提前结算 — 仅对活跃(待开赛/进行中)的注单可用,
-                      // 已中/未中/已提结的不显示。
-                      if (isPending || isLive)
-                        TextButton.icon(
-                          onPressed: _cashingOutBets.contains(b.prediction.id)
-                              ? null
-                              : () => _confirmCashout(b),
-                          icon: const Icon(Icons.savings_outlined, size: 14, color: T.brandDeep),
-                          label: Text(tr('pred.cashout_btn'),
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: T.brandDeep,
-                                  fontWeight: FontWeight.w800)),
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            minimumSize: Size.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                        )
-                      else
-                        Padding(
-                          padding: const EdgeInsets.only(right: 10),
-                          child: Text(
-                            tr('pred.action_detail'),
-                            style: const TextStyle(
-                                fontSize: 11, color: T.brandDeep, fontWeight: FontWeight.w700),
-                          ),
+                      // 提前结算(cashout)已全面禁用(2026-05-27)。统一显示"查看详情"。
+                      Padding(
+                        padding: const EdgeInsets.only(right: 10),
+                        child: Text(
+                          tr('pred.action_detail'),
+                          style: const TextStyle(
+                              fontSize: 11, color: T.brandDeep, fontWeight: FontWeight.w700),
                         ),
+                      ),
                     ],
                   ),
                 ),
@@ -1064,29 +978,10 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w800, color: T.down))
               else ...[
+                // 提前结算(cashout)已全面禁用(2026-05-27),串关同样不可提前结算。
                 Text(fmt.format(p.createdAt),
                     style: const TextStyle(
                         fontSize: 11, color: T.inkSubtle, fontFamily: T.fontMono)),
-                // 提前结算按钮:只要 status=pending 且没有 lost leg 就可以
-                if (p.legs.every((l) => l.legStatus != 'lost') &&
-                    p.legs.any((l) => l.legStatus == 'pending')) ...[
-                  const SizedBox(width: 8),
-                  TextButton.icon(
-                    onPressed: _cashingOutParlays.contains(p.id)
-                        ? null
-                        : () => _confirmParlayCashout(p),
-                    icon: const Icon(Icons.flash_on, size: 14, color: T.brandDeep),
-                    label: Text(tr('pred.cashout_btn'),
-                        style: const TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.w800, color: T.brandDeep)),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                      minimumSize: const Size(0, 28),
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: const Color(0x142CD7FD),
-                    ),
-                  ),
-                ],
               ],
             ],
           ),
@@ -1095,76 +990,6 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
     );
   }
 
-  Future<void> _confirmParlayCashout(Parlay p) async {
-    // 估算上下界:全 pending 时 stake×0.92 是绝对下限;
-    // 全 won 已 cashed_out 不在此分支,所以这里只展示 stake×0.92 ~ stake×totalOdds×0.92
-    final estimateLow = p.stake * 0.92;
-    final estimateHigh = p.stake * p.totalOdds * 0.92;
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(tr('pred.cashout_title'),
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${tr('pred.parlay_label')} #${p.id} · ${p.legs.length} ${tr('pred.legs_label')}',
-                style: const TextStyle(fontSize: 13, color: T.inkMd)),
-            const SizedBox(height: 4),
-            Text('${tr('pred.combo_odds')} ${p.totalOdds.toStringAsFixed(2)} · '
-                '${tr('pred.stake_label')} ${p.stake.toStringAsFixed(0)} USDT',
-                style: const TextStyle(fontSize: 13, color: T.inkMd)),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0x14F5B544),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                tr('pred.cashout_desc'),
-                style: const TextStyle(fontSize: 11, color: Color(0xFFC7861E), fontWeight: FontWeight.w600),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${tr('pred.cashout_estimate')}: ${estimateLow.toStringAsFixed(2)} ~ ${estimateHigh.toStringAsFixed(2)} USDT',
-              style: const TextStyle(fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text(tr('pred.cashout_cancel'), style: const TextStyle(color: T.inkLo)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(tr('pred.cashout_confirm'),
-                style: const TextStyle(color: T.brandDeep, fontWeight: FontWeight.w800)),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    if (_cashingOutParlays.contains(p.id)) return;
-    setState(() => _cashingOutParlays.add(p.id));
-    try {
-      final result = await widget.state.api.cashOutParlay(p.id);
-      if (!mounted) return;
-      Toast.success(context,
-          tr('pred.cashout_ok').replaceAll('{n}', result.cashedOut.toStringAsFixed(2)));
-      setState(() => _future = _load());
-    } catch (e) {
-      if (!mounted) return;
-      Toast.error(context, e.toString());
-    } finally {
-      if (mounted) setState(() => _cashingOutParlays.remove(p.id));
-    }
-  }
 }
 
 class _MyBetsBundle {
@@ -1190,10 +1015,10 @@ String _selectionLabel(String marketType, String score) {
         side = score.substring(0, at);
         line = score.substring(at + 1);
       }
-      final sideLabel = side == 'over' ? tr('pred.ou_over') : tr('pred.ou_under');
-      // 显示 line:线 2.5 时省略(老体验),其它线追加 "(1.5)" 后缀
-      if (line == null || line == '2.5') return sideLabel;
-      return '$sideLabel ($line)';
+      // 显示用户实际下注的 line(score 里的 @line);legacy 单无 @ 时默认 2.5。
+      final l = line ?? '2.5';
+      return (side == 'over' ? tr('pred.ou_over') : tr('pred.ou_under'))
+          .replaceAll('{line}', l);
     case MarketType.btts:
       if (score == 'yes') return tr('pred.btts_yes');
       if (score == 'no') return tr('pred.btts_no');
@@ -1203,18 +1028,16 @@ String _selectionLabel(String marketType, String score) {
       if (score == 'draw') return '${tr('detail.winner_title')} · ${tr('detail.draw')}';
       if (score == 'away') return '${tr('detail.winner_title')} · ${tr('detail.win_away')}';
       return score;
-    case MarketType.doubleChance:
-      // score: "1X" | "X2" | "12"
-      switch (score) {
-        case '1X': return '${tr('dc.short')} · ${tr('dc.1x')}';
-        case 'X2': return '${tr('dc.short')} · ${tr('dc.x2')}';
-        case '12': return '${tr('dc.short')} · ${tr('dc.12')}';
+    case MarketType.htOverUnder:
+      final atH = score.lastIndexOf('@');
+      if (atH > 0) {
+        final s = score.substring(0, atH);
+        final l = score.substring(atH + 1);
+        return s == 'over'
+            ? tr('detail.htou_over_sel').replaceAll('{line}', l)
+            : tr('detail.htou_under_sel').replaceAll('{line}', l);
       }
-      return '${tr('dc.short')} · $score';
-    case MarketType.drawNoBet:
-      if (score == 'home') return '${tr('dnb.short')} · ${tr('detail.win_home')}';
-      if (score == 'away') return '${tr('dnb.short')} · ${tr('detail.win_away')}';
-      return '${tr('dnb.short')} · $score';
+      return tr('detail.htou_sel_fallback').replaceAll('{score}', score);
     case MarketType.asianHandicap:
       // score 形如 "home@-0.5" / "away@+1.5"
       final at = score.lastIndexOf('@');
@@ -1224,6 +1047,9 @@ String _selectionLabel(String marketType, String score) {
         final sideLabel = side == 'home' ? tr('detail.win_home') : tr('detail.win_away');
         return '${tr('detail.handicap_title')} · $sideLabel $line';
       }
+      // 赛前 AH: score 是 plain 'home'/'away'(无 line)
+      if (score == 'home') return '${tr('detail.handicap_title')} · ${tr('detail.win_home')}';
+      if (score == 'away') return '${tr('detail.handicap_title')} · ${tr('detail.win_away')}';
       return score;
     case MarketType.correctScore:
     default:
