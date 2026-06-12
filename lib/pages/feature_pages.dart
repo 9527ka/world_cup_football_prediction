@@ -853,7 +853,8 @@ class CustomerServicePage extends StatelessWidget {
     ['feat.cs.q4', 'feat.cs.a4'],
   ];
 
-  String get _csHandle => state?.customerServiceTG ?? 'espn_football';
+  String get _csHandle =>
+      state?.customerServiceFor(I18n.instance.locale) ?? '';
 
   @override
   Widget build(BuildContext context) {
@@ -908,7 +909,7 @@ class CustomerServicePage extends StatelessWidget {
                           const Icon(Icons.telegram,
                               size: 20, color: Colors.white),
                           const SizedBox(width: 6),
-                          Text('@$_csHandle',
+                          Text(_csHandle.isEmpty ? '—' : '@$_csHandle',
                               style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w700,
@@ -994,7 +995,10 @@ class CustomerServicePage extends StatelessWidget {
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
-                      onTap: () => _openTelegramChat(context, _csHandle),
+                      // 客服未配置时禁用,避免跳到无关/不存在的账号
+                      onTap: _csHandle.isEmpty
+                          ? null
+                          : () => _openTelegramChat(context, _csHandle),
                       borderRadius: BorderRadius.circular(T.rSm),
                       child: Center(
                         child: Row(
@@ -1119,11 +1123,7 @@ class RulesPage extends StatelessWidget {
       icon: Icons.layers_rounded,
       items: ['feat.rules.s3.i1', 'feat.rules.s3.i2', 'feat.rules.s3.i3', 'feat.rules.s3.i4'],
     ),
-    _RuleSection(
-      title: 'feat.rules.s4.title',
-      icon: Icons.monetization_on_rounded,
-      items: ['feat.rules.s4.i1', 'feat.rules.s4.i2', 'feat.rules.s4.i3'],
-    ),
+    // Cashout(提前兑现)规则段已移除 —— 该功能已全面下线,s4.* 文案不再展示。
     _RuleSection(
       title: 'feat.rules.s5.title',
       icon: Icons.calculate_rounded,

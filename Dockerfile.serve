@@ -1,0 +1,15 @@
+# Prebuilt-serve image —— 只把"本地已编译好"的 Flutter Web 产物塞进 nginx。
+#
+# 前端改为本地编译(scripts/deploy-frontend.sh,用 fvm flutter 3.27.0 + HTML renderer,
+# 与原 Dockerfile 钉的版本一致),服务器不再跑 Flutter 编译:
+#   - 部署快(服务器只做一次静态 COPY,秒级)
+#   - 不再堆 Docker build cache(之前 72GB 全是反复 flutter 编译攒的)
+#
+# 需要"服务器侧全量可复现构建"时,仍可改回多阶段 Dockerfile(保留未删,见同目录)。
+#
+# 前置:build/web 必须已由 deploy-frontend.sh 本地编译并 rsync 到位,否则 COPY 会失败
+# (失败时旧 frontend 容器继续跑,不影响线上)。
+FROM nginx:1.27-alpine
+COPY build/web /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80

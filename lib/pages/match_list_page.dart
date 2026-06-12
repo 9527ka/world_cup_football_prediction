@@ -9,6 +9,7 @@ import '../services/i18n.dart';
 import 'league_picker_page.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
+import '../utils/ny_time.dart';
 import '../utils/team_crests.dart';
 import '../utils/team_names.dart';
 import 'match_detail_page.dart';
@@ -75,7 +76,7 @@ class _MatchListPageState extends State<MatchListPage>
   @override
   void initState() {
     super.initState();
-    _selectedDate = DateTime.now();
+    _selectedDate = nyNow();
     _buildDateOptions();
     _loadPage(reset: true);
     _loadConfigLeagues();
@@ -134,7 +135,7 @@ class _MatchListPageState extends State<MatchListPage>
   }
 
   void _buildDateOptions() {
-    final now = DateTime.now();
+    final now = nyNow();
     final today = DateTime(now.year, now.month, now.day);
     if (_tab == _Tab.results) {
       _dateOptions = List.generate(7, (i) => today.subtract(Duration(days: 6 - i)));
@@ -218,7 +219,7 @@ class _MatchListPageState extends State<MatchListPage>
       _tab = tab;
       _league = null;
       _buildDateOptions();
-      _selectedDate = DateTime.now();
+      _selectedDate = nyNow();
     });
     _loadPage(reset: true);
     if (_scrollCtrl.hasClients) {
@@ -258,7 +259,8 @@ class _MatchListPageState extends State<MatchListPage>
       if (_tab == _Tab.schedule || _tab == _Tab.results) {
         final sd = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
         it = it.where((m) {
-          final md = DateTime(m.date.year, m.date.month, m.date.day);
+          final ny = toNyWall(m.date);
+          final md = DateTime(ny.year, ny.month, ny.day);
           return md == sd;
         });
       }
@@ -276,7 +278,12 @@ class _MatchListPageState extends State<MatchListPage>
         child: ListView.builder(
           controller: _scrollCtrl,
           padding: EdgeInsets.zero,
-          addAutomaticKeepAlives: true,
+          // 🔴 不保活离屏行:赛程/赛果可达数百场,keepAlive=true 会把每个滑过的行
+          // (含 RepaintBoundary/球队图)永久留存内存,快速 fling 后内存暴涨 →
+          // iOS WKWebView / 弱机白屏崩溃(与资金明细页同一类问题)。改 false + 限定
+          // cacheExtent,离屏行回收,只保留视口附近。见 reference_frontend_pitfalls。
+          addAutomaticKeepAlives: false,
+          cacheExtent: 600,
           itemCount: _headerCount + sorted.length + (showEmpty ? 1 : 0) + (_loading ? 1 : 0) + (!_hasMore && sorted.isNotEmpty ? 1 : 0),
           itemBuilder: (context, index) {
             // Header items
@@ -450,7 +457,7 @@ class _MatchListPageState extends State<MatchListPage>
   // ── Date picker (schedule / results) ────────────────────
 
   Widget _datePicker() {
-    final today = DateTime.now();
+    final today = nyNow();
     final todayDay = DateTime(today.year, today.month, today.day);
     final fmt = _fmtMD;
 
@@ -863,7 +870,7 @@ class _MatchListPageState extends State<MatchListPage>
               ),
               const SizedBox(width: 8),
               Text(
-                fmt.format(m.date),
+                fmt.format(toNyWall(m.date)),
                 style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
@@ -931,13 +938,21 @@ class _MatchListPageState extends State<MatchListPage>
       final pl = ld.periodLabel;
       if (pl == 'HT') return tr('live.minute_ht');
       if (pl == 'PEN') return tr('live.minute_pen');
-      if (pl == 'BT') return ld.minuteDisplay; // post-game break
+      if (pl == 'BT') return tr('live.minute_bt'); // 加时中场(原 minuteDisplay 可能为空字符串)
+      if (pl == 'ET') {
+        // 加时赛:API-Football 的 elapsed 续接常规时间(约 91-120'),直接显示
+        // 真实分钟。绝不能落进下面的常规 90+X 补时逻辑或墙钟 >150min 判"完"。
+        final em = ld.minute > 0 ? ld.minute : 90;
+        if (ld.extra > 0) return '$em+${ld.extra}\'';
+        return "$em'";
+      }
       if (ld.extra > 0) return '${ld.minute}+${ld.extra}\''; // stoppage time
     }
     final upMin = ld?.minute ?? 0;
     final elapsedFromKickoff = DateTime.now().difference(m.date).inMinutes;
-    // 兜底:kickoff 已超过 150min(90+HT+ET+PEN+buffer)还在 live → 上游 feed
-    // 卡住,后端 sweeper 尚未追上。前端先显示"完",别再骗用户"还在 90'"。
+    // 兜底:kickoff 已超过 150min 还在 live → 上游 feed 卡住,后端 sweeper 尚未
+    // 追上,先显示"完"。此处只会被 1H/2H 命中(ET/BT/PEN/HT 上面已 return),
+    // 故不会再把加时赛误判成"完"。
     if (elapsedFromKickoff > 150) return tr('live.minute_ft');
 
     int mins;

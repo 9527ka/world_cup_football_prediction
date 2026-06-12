@@ -7,6 +7,7 @@ import '../services/api_client.dart';
 import '../services/app_state.dart';
 import '../services/auth_gate.dart';
 import '../services/i18n.dart';
+import '../services/telegram.dart';
 import '../services/toast.dart';
 import '../theme/tokens.dart';
 import '../widgets/language_picker.dart' show nativeLanguageNames;
@@ -31,7 +32,8 @@ class ProfilePage extends StatefulWidget {
 class _ProfileBundle {
   final UserStats stats;
   final VipStatus? vip; // null when user not authenticated
-  const _ProfileBundle(this.stats, this.vip);
+  final Wallet? wallet; // 多币种余额 + 实时汇率;null 时只显示 USDT
+  const _ProfileBundle(this.stats, this.vip, [this.wallet]);
 }
 
 class _ProfilePageState extends State<ProfilePage> {
@@ -58,7 +60,13 @@ class _ProfilePageState extends State<ProfilePage> {
     } catch (_) {
       // 401/降级时不阻塞,只是不显示 VIP 徽章
     }
-    return _ProfileBundle(stats, vip);
+    Wallet? wallet;
+    try {
+      wallet = await widget.state.api.getWallet();
+    } catch (_) {
+      // 拿不到钱包不阻塞,退化为只显示 USDT(stats.balance)
+    }
+    return _ProfileBundle(stats, vip, wallet);
   }
 
   @override
@@ -100,7 +108,7 @@ class _ProfilePageState extends State<ProfilePage> {
             children: [
               const SizedBox(height: 12),
               _profileHeader(user, vip),
-              if (authErr) _authErrorBanner() else _walletCard(s),
+              if (authErr) _authErrorBanner() else _walletCard(s, bundle?.wallet),
               _statsRow(s),
               _menuGroupBets(s),
               _menuGroupSettings(vip),
@@ -301,11 +309,14 @@ class _ProfilePageState extends State<ProfilePage> {
             TextButton(
               onPressed: () async {
                 if (isInMiniApp()) {
-                  await widget.state.tryTelegramLogin();
-                } else {
-                  final ok = await requireLogin(context, widget.state);
-                  if (!ok) return;
+                  // Mini App:重载 WebApp 让 Telegram 重新签发新 initData。
+                  // 重发同一份旧 initData 永远会被后端拒(=点重试没反应),
+                  // 必须 reload 才能拿到新签名后重新登录。
+                  Telegram.reloadApp();
+                  return;
                 }
+                final ok = await requireLogin(context, widget.state);
+                if (!ok) return;
                 setState(() => _future = _load());
               },
               style: TextButton.styleFrom(
@@ -327,7 +338,7 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _walletCard(UserStats s) {
+  Widget _walletCard(UserStats s, [Wallet? wallet]) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: Container(
@@ -401,6 +412,11 @@ class _ProfilePageState extends State<ProfilePage> {
                 ],
               ),
             ),
+            // ETH / BTC 原生余额(常驻显示)+ 一键兑换成 USDT。
+            if (wallet != null) ...[
+              _coinBalanceRow('ETH', wallet.balanceEth, wallet.rateEth),
+              _coinBalanceRow('BTC', wallet.balanceBtc, wallet.rateBtc),
+            ],
             const SizedBox(height: 14),
             Row(
               children: [
@@ -421,6 +437,68 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       ),
     );
+  }
+
+  /// 钱包卡内的一行 ETH/BTC 余额:币种 + 数量 + ≈USDT + 「兑换」按钮。
+  Widget _coinBalanceRow(String coin, double amount, double rate) {
+    final approx = rate > 0 ? '≈ ${_fmtBal.format(amount * rate)} USDT' : '';
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(coin,
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_fmtCoinAmt(amount),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        fontFamily: T.fontMono)),
+                if (approx.isNotEmpty)
+                  Text(approx,
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.55),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+          OutlinedButton(
+            onPressed: amount > 0 ? () => _showConvertDialog(coin, amount, rate) : null,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              disabledForegroundColor: Colors.white.withValues(alpha: 0.3),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.4)),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              minimumSize: const Size(0, 32),
+            ),
+            child: Text(tr('convert.action'),
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtCoinAmt(double v) {
+    var s = v.toStringAsFixed(8);
+    if (s.contains('.')) {
+      s = s.replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+    }
+    return s;
   }
 
   Widget _walletAction(String label, IconData icon,
@@ -860,9 +938,12 @@ class _ProfilePageState extends State<ProfilePage> {
             Text(tr('profile.about_desc'),
                 style: const TextStyle(fontSize: 13, color: T.inkMd, height: 1.5)),
             const SizedBox(height: 12),
-            Text(tr('profile.about_contact')
-                    .replaceAll('{handle}', '@${widget.state.customerServiceTG}'),
-                style: const TextStyle(fontSize: 12, color: T.inkLo)),
+            Builder(builder: (_) {
+              final h = widget.state.customerServiceFor(I18n.instance.locale);
+              return Text(
+                  tr('profile.about_contact').replaceAll('{handle}', h.isEmpty ? '—' : '@$h'),
+                  style: const TextStyle(fontSize: 12, color: T.inkLo));
+            }),
             Text(tr('profile.about_copyright'),
                 style: const TextStyle(fontSize: 12, color: T.inkLo)),
           ],
@@ -1015,6 +1096,85 @@ class _ProfilePageState extends State<ProfilePage> {
             if (selected) const Icon(Icons.check, color: T.brandDeep, size: 18),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 兑换对话框:ETH/BTC → USDT,显示实时汇率 + 即时估算,确认后调后端按实时汇率换。
+  Future<void> _showConvertDialog(String coin, double maxAmount, double rate) async {
+    final ctrl = TextEditingController(text: _fmtCoinAmt(maxAmount));
+    String? err;
+    bool busy = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocal) {
+          final amt = double.tryParse(ctrl.text.trim()) ?? 0;
+          final estUsdt = rate > 0 ? amt * rate : 0;
+          return AlertDialog(
+            title: Text('${tr('convert.title')} · $coin → USDT'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(rate > 0
+                    ? '${tr('convert.rate')}: 1 $coin ≈ ${_fmtBal.format(rate)} USDT'
+                    : tr('convert.rate_unavailable')),
+                const SizedBox(height: 6),
+                Text('${tr('convert.available')}: ${_fmtCoinAmt(maxAmount)} $coin',
+                    style: const TextStyle(fontSize: 12, color: T.inkLo)),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ctrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: '$coin ${tr('convert.amount')}',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixText: coin,
+                  ),
+                  onChanged: (_) => setLocal(() => err = null),
+                ),
+                const SizedBox(height: 8),
+                Text('${tr('convert.you_get')}: ≈ ${_fmtBal.format(estUsdt)} USDT',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                if (err != null) ...[
+                  const SizedBox(height: 8),
+                  Text(err!, style: const TextStyle(color: T.down, fontSize: 12)),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dialogCtx),
+                child: Text(tr('common.cancel')),
+              ),
+              FilledButton(
+                onPressed: busy || rate <= 0
+                    ? null
+                    : () async {
+                        final a = double.tryParse(ctrl.text.trim()) ?? 0;
+                        if (a <= 0 || a > maxAmount) {
+                          setLocal(() => err = tr('convert.invalid_amount'));
+                          return;
+                        }
+                        setLocal(() => busy = true);
+                        try {
+                          await widget.state.api.convertBalance(from: coin, amount: a);
+                          if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                          _refreshStats();
+                        } catch (e) {
+                          setLocal(() {
+                            busy = false;
+                            err = e.toString();
+                          });
+                        }
+                      },
+                child: Text(busy ? tr('convert.processing') : tr('common.confirm')),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

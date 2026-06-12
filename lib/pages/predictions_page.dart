@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/match.dart';
+import '../utils/ny_time.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
 import '../services/toast.dart';
@@ -83,18 +84,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
                   setState(() => _future = _load());
                   await _future;
                 },
-                child: ListView(
-                  padding: EdgeInsets.zero,
-                  children: [
-                    _topBar(),
-                    _segmented(all.length, parlays.length),
-                    if (_topTab == 'single')
-                      ..._buildSingleSection(bundle, all)
-                    else
-                      ..._buildParlaySection(parlays),
-                    const SizedBox(height: 24),
-                  ],
-                ),
+                child: _buildLazyList(bundle, all, parlays),
               );
             },
           ),
@@ -169,6 +159,14 @@ class _PredictionsPageState extends State<PredictionsPage> {
                                 fontWeight: FontWeight.w700)),
                       ],
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                        tr('pred.month_stake')
+                            .replaceAll('{n}', _predFmtBal.format(s.monthStake)),
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: T.inkMd,
+                            fontWeight: FontWeight.w600)),
                   ],
                 ),
                 const Spacer(),
@@ -376,8 +374,198 @@ class _PredictionsPageState extends State<PredictionsPage> {
         ),
       );
     } else {
-      _goMatchDetail(b);
+      _showBetDetail(b);
     }
+  }
+
+  /// 注单详情弹层 — 收据样式,信息齐全便于截图给客户;
+  /// 不再直接跳比赛页(底部保留"查看比赛 ›"入口)。
+  void _showBetDetail(BetRow b) {
+    final pred = b.prediction;
+    final eff = b.effectiveStatus;
+    final isWon = eff == 'won' || eff == 'half_won';
+    final isLostLike = eff == 'lost' || eff == 'half_lost';
+    final isSettled = !(eff == 'pending' || eff == 'live');
+    final isLive = eff == 'live';
+    final payout = pred.payout > 0 ? pred.payout : pred.stake * pred.oddsAtPlace;
+    final profit = pred.payout - pred.stake;
+
+    Widget row(String label, String value,
+            {Color color = T.ink, bool mono = true, bool bold = false}) =>
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Text(value,
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: color,
+                      fontWeight: bold ? FontWeight.w800 : FontWeight.w700,
+                      fontFamily: mono ? T.fontMono : null)),
+            ],
+          ),
+        );
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: T.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                      color: T.border, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              Row(
+                children: [
+                  Text(tr('pred.detail_title'),
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
+                  const SizedBox(width: 8),
+                  Text('#${pred.id}',
+                      style: const TextStyle(
+                          fontSize: 11,
+                          color: T.inkSubtle,
+                          fontWeight: FontWeight.w600,
+                          fontFamily: T.fontMono)),
+                  const Spacer(),
+                  StatusPill(status: betStatusFromString(eff)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  LeagueFlag(slug: b.leagueSlug, height: 12, width: 18),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                        b.leagueName.isEmpty
+                            ? tr('pred.unknown_league')
+                            : localizedLeague(b.leagueName),
+                        style: const TextStyle(
+                            fontSize: 11, color: T.inkLo, fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  TeamCrest(
+                      name: b.home,
+                      id: b.homeId > 0 ? b.homeId : null,
+                      leagueSlug: b.leagueSlug,
+                      size: 26),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(children: [
+                        TextSpan(
+                            text: localizedTeam(b.home, apiZh: b.homeZh),
+                            style: const TextStyle(
+                                fontSize: 14, fontWeight: FontWeight.w700, color: T.ink)),
+                        const TextSpan(
+                            text: '  vs  ',
+                            style: TextStyle(
+                                color: T.inkSubtle, fontWeight: FontWeight.w500)),
+                        TextSpan(
+                            text: localizedTeam(b.away, apiZh: b.awayZh),
+                            style: const TextStyle(
+                                fontSize: 14, fontWeight: FontWeight.w700, color: T.ink)),
+                      ]),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TeamCrest(
+                      name: b.away,
+                      id: b.awayId > 0 ? b.awayId : null,
+                      leagueSlug: b.leagueSlug,
+                      size: 26),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: T.fill,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    row(tr('pred.detail_pick'),
+                        _selectionLabel(pred.marketType, pred.score),
+                        mono: pred.marketType == MarketType.correctScore, bold: true),
+                    row(tr('detail.bet_odds'), pred.oddsAtPlace.toStringAsFixed(2),
+                        color: T.gold, bold: true),
+                    if (b.liveHome != null && (isLive || isSettled))
+                      row(isLive ? tr('pred.live_score') : tr('pred.final_score'),
+                          '${b.liveHome}:${b.liveAway}',
+                          color: T.brandDeep, bold: true),
+                    const Divider(height: 14, color: T.border),
+                    row(tr('pred.detail_stake'),
+                        '${_predFmtBal.format(pred.stake)} USDT'),
+                    row(
+                        isSettled
+                            ? tr('pred.detail_payout')
+                            : tr('pred.detail_est_payout'),
+                        '${_predFmtBal.format(eff == 'lost' ? 0 : payout)} USDT',
+                        color: isWon ? T.up : (isLostLike ? T.inkLo : T.ink),
+                        bold: true),
+                    if (isSettled)
+                      row(tr('pred.detail_profit'),
+                          '${profit >= 0 ? '+' : ''}${_predFmtBal.format(profit)} USDT',
+                          color: profit > 0 ? T.up : (profit < 0 ? T.down : T.warn),
+                          bold: true),
+                    const Divider(height: 14, color: T.border),
+                    row(tr('pred.detail_placed_at'),
+                        _predFmtDate.format(toNyWall(pred.createdAt)),
+                        color: T.inkMd),
+                    if (pred.settledAt != null)
+                      row(tr('pred.detail_settled_at'),
+                          _predFmtDate.format(toNyWall(pred.settledAt!)),
+                          color: T.inkMd),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              Center(
+                child: TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _goMatchDetail(b);
+                  },
+                  child: Text(tr('pred.view_match'),
+                      style: const TextStyle(
+                          fontSize: 12, color: T.inkLo, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _goMatchDetail(BetRow b) {
@@ -468,43 +656,60 @@ class _PredictionsPageState extends State<PredictionsPage> {
     );
   }
 
-  List<Widget> _buildSingleSection(_MyBetsBundle bundle, List<BetRow> all) {
-    final counts = {
-      'all': all.length,
-      'pending': all.where((b) => b.effectiveStatus == 'pending').length,
-      'live': all.where((b) => b.effectiveStatus == 'live').length,
-      // half_won 算入 won 标签;half_lost 算入 lost。push 单独不显示在 won/lost
-      // 标签里(只在卡片状态徽章里出现)。
-      'won': all.where((b) => b.effectiveStatus == 'won' || b.effectiveStatus == 'half_won').length,
-      'lost': all.where((b) => b.effectiveStatus == 'lost' || b.effectiveStatus == 'half_lost').length,
-    };
-    final filtered = _tab == 'all'
-        ? all
-        : all.where((b) {
-            final s = b.effectiveStatus;
-            if (_tab == 'won') return s == 'won' || s == 'half_won';
-            if (_tab == 'lost') return s == 'lost' || s == 'half_lost';
-            return s == _tab;
-          }).toList();
-    return [
-      _statsHero(bundle.stats),
-      _tabs(counts),
-      if (filtered.isEmpty) _empty(),
-      ...filtered.map(_betCard),
+  // _buildLazyList — 主列表懒加载:头部(少量 widget,预建无压力)+ N 张卡片交给
+  // itemBuilder 按需构建(用户下注可上百条,绝不一次性 build,否则弱机 fling 会卡/崩)。
+  Widget _buildLazyList(_MyBetsBundle bundle, List<BetRow> all, List<Parlay> parlays) {
+    final single = _topTab == 'single';
+    final headers = <Widget>[
+      _topBar(),
+      _segmented(all.length, parlays.length),
     ];
-  }
-
-  List<Widget> _buildParlaySection(List<Parlay> parlays) {
-    if (parlays.isEmpty) {
-      return [_parlayEmpty()];
+    List<BetRow> bets = const [];
+    if (single) {
+      final counts = {
+        'all': all.length,
+        'pending': all.where((b) => b.effectiveStatus == 'pending').length,
+        'live': all.where((b) => b.effectiveStatus == 'live').length,
+        'won': all
+            .where((b) =>
+                b.effectiveStatus == 'won' || b.effectiveStatus == 'half_won')
+            .length,
+        'lost': all
+            .where((b) =>
+                b.effectiveStatus == 'lost' || b.effectiveStatus == 'half_lost')
+            .length,
+      };
+      bets = _tab == 'all'
+          ? all
+          : all.where((b) {
+              final s = b.effectiveStatus;
+              if (_tab == 'won') return s == 'won' || s == 'half_won';
+              if (_tab == 'lost') return s == 'lost' || s == 'half_lost';
+              return s == _tab;
+            }).toList();
+      headers.add(_statsHero(bundle.stats));
+      headers.add(_tabs(counts));
+      if (bets.isEmpty) headers.add(_empty());
+    } else {
+      headers.add(parlays.isEmpty ? _parlayEmpty() : _parlayStatsHero(parlays));
     }
-    return [
-      _parlayStatsHero(parlays),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-        child: Column(children: parlays.map(_parlayCard).toList()),
-      ),
-    ];
+    final dataLen = single ? bets.length : parlays.length;
+    return ListView.builder(
+      padding: EdgeInsets.zero,
+      addAutomaticKeepAlives: false,
+      cacheExtent: 600,
+      itemCount: headers.length + dataLen + 1, // 头部 + 卡片 + 底部留白
+      itemBuilder: (context, i) {
+        if (i < headers.length) return headers[i];
+        if (i == headers.length + dataLen) return const SizedBox(height: 24);
+        final idx = i - headers.length;
+        if (single) return _betCard(bets[idx]);
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: _parlayCard(parlays[idx]),
+        );
+      },
+    );
   }
 
   Widget _parlayStatsHero(List<Parlay> parlays) {
@@ -567,7 +772,7 @@ class _PredictionsPageState extends State<PredictionsPage> {
     final txt = (overdue
             ? tr('pred.kickoff_overdue')
             : tr('pred.kickoff'))
-        .replaceAll('{time}', fmt.format(kickoff));
+        .replaceAll('{time}', fmt.format(toNyWall(kickoff)));
     return Row(
       children: [
         Icon(
@@ -605,8 +810,14 @@ class _PredictionsPageState extends State<PredictionsPage> {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-      child: LightCard(
-        padding: EdgeInsets.zero,
+      child: Container(
+        // 扁平卡片(无阴影):阴影是 web 最贵的合成,几百卡 fling 会卡/崩。
+        decoration: BoxDecoration(
+          color: T.surface,
+          borderRadius: BorderRadius.circular(T.rMd),
+          border: Border.all(color: T.border),
+        ),
+        clipBehavior: Clip.antiAlias,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -810,19 +1021,22 @@ class _PredictionsPageState extends State<PredictionsPage> {
                               : isLive
                                   ? tr('pred.foot_live')
                                   : pred.settledAt != null
-                                      ? tr('pred.foot_settled').replaceAll('{time}', fmt.format(pred.settledAt!))
-                                      : tr('pred.foot_placed').replaceAll('{time}', fmt.format(pred.createdAt)),
+                                      ? tr('pred.foot_settled').replaceAll('{time}', fmt.format(toNyWall(pred.settledAt!)))
+                                      : tr('pred.foot_placed').replaceAll('{time}', fmt.format(toNyWall(pred.createdAt))),
                           style: const TextStyle(
                               fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600),
                         ),
                       ),
-                      // 提前结算(cashout)已全面禁用(2026-05-27)。统一显示"查看详情"。
+                      // 未开赛(pending)的单注可撤单 → 直接显示"撤单 ›"(红色);
+                      // 滚球中 / 已结算显示"查看详情"。tap 行为见 _onFooterTap(同 isPending 判定)。
                       Padding(
                         padding: const EdgeInsets.only(right: 10),
                         child: Text(
-                          tr('pred.action_detail'),
-                          style: const TextStyle(
-                              fontSize: 11, color: T.brandDeep, fontWeight: FontWeight.w700),
+                          isPending ? tr('pred.action_cancel') : tr('pred.action_detail'),
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: isPending ? T.down : T.brandDeep,
+                              fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
@@ -874,9 +1088,6 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: T.border),
-        boxShadow: const [
-          BoxShadow(color: Color(0x0A0E2238), blurRadius: 6, offset: Offset(0, 2)),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -979,7 +1190,7 @@ extension _PredictionsPageStateParlay on _PredictionsPageState {
                         fontSize: 13, fontWeight: FontWeight.w800, color: T.down))
               else ...[
                 // 提前结算(cashout)已全面禁用(2026-05-27),串关同样不可提前结算。
-                Text(fmt.format(p.createdAt),
+                Text(fmt.format(toNyWall(p.createdAt)),
                     style: const TextStyle(
                         fontSize: 11, color: T.inkSubtle, fontFamily: T.fontMono)),
               ],

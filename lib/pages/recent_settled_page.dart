@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/match.dart';
+import '../utils/ny_time.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
 import '../services/toast.dart';
@@ -77,49 +78,59 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
           child: RefreshIndicator(
             color: T.brandDeep,
             onRefresh: _load,
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: [
-                _topBar(),
-                if (leagues.isNotEmpty) _leagueChips(leagues),
-                if (_loading)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 60),
-                    child: Center(child: CircularProgressIndicator(color: T.brandDeep)),
-                  )
-                else if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 24),
-                    child: Center(
-                      child: Text(_error!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: T.down, fontSize: 12)),
-                    ),
-                  )
-                else if (visible.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 24),
-                    child: Center(
-                      child: Column(children: [
-                        Icon(Icons.sports_soccer_outlined, size: 56, color: T.inkSubtle),
-                        const SizedBox(height: 12),
-                        Text(tr('settled.empty'),
-                            style: const TextStyle(
-                                fontSize: 13, color: T.inkLo, fontWeight: FontWeight.w600)),
-                      ]),
-                    ),
-                  )
-                else
-                  ...visible.map((m) => KeyedSubtree(
-                    key: ValueKey(m.id),
-                    child: _card(m),
-                  )),
-                const SizedBox(height: 24),
-              ],
-            ),
+            child: _buildList(leagues, visible),
           ),
         ),
       ),
+    );
+  }
+
+  // 懒加载:已结算比赛最多 50 张卡,逐项构建 + 关卡片阴影,弱机滚动不卡。
+  Widget _buildList(Map<String, String> leagues, List<MatchInfo> visible) {
+    final headers = <Widget>[_topBar()];
+    if (leagues.isNotEmpty) headers.add(_leagueChips(leagues));
+    Widget? status;
+    if (_loading) {
+      status = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 60),
+        child: Center(child: CircularProgressIndicator(color: T.brandDeep)),
+      );
+    } else if (_error != null) {
+      status = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 24),
+        child: Center(
+          child: Text(_error!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: T.down, fontSize: 12)),
+        ),
+      );
+    } else if (visible.isEmpty) {
+      status = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 24),
+        child: Center(
+          child: Column(children: [
+            Icon(Icons.sports_soccer_outlined, size: 56, color: T.inkSubtle),
+            const SizedBox(height: 12),
+            Text(tr('settled.empty'),
+                style: const TextStyle(
+                    fontSize: 13, color: T.inkLo, fontWeight: FontWeight.w600)),
+          ]),
+        ),
+      );
+    }
+    if (status != null) headers.add(status);
+    final dataLen = status == null ? visible.length : 0;
+    return ListView.builder(
+      padding: EdgeInsets.zero,
+      addAutomaticKeepAlives: false,
+      cacheExtent: 600,
+      itemCount: headers.length + dataLen + 1,
+      itemBuilder: (context, i) {
+        if (i < headers.length) return headers[i];
+        if (i == headers.length + dataLen) return const SizedBox(height: 24);
+        final m = visible[i - headers.length];
+        return KeyedSubtree(key: ValueKey(m.id), child: _card(m));
+      },
     );
   }
 
@@ -216,6 +227,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: LightCard(
+        shadow: false,
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
         onTap: () => AntiSpam.guard('match_detail_${m.id}', () async {
           try {
@@ -306,7 +318,7 @@ class _RecentSettledPageState extends State<RecentSettledPage> {
             // 终场时间
             Align(
               alignment: Alignment.centerRight,
-              child: Text(fmt.format(m.date),
+              child: Text(fmt.format(toNyWall(m.date)),
                   style: const TextStyle(fontSize: 10, color: T.inkLo)),
             ),
           ],

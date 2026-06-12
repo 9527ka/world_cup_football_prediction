@@ -74,13 +74,30 @@
       })
       .then(function (body) {
         if (!body.token) throw new Error('no token returned');
-        // 回主页;带 tg_token 参数 + 上次 return_url(sessionStorage 存的)
+        // 回原页;带 tg_token 参数。优先用 return_to 带来的 ret(多域名部署时
+        // OAuth 统一走规范域名,授权后据此跳回用户原域名)。
+        // ⚠️ ret 可被构造,必须白名单校验,否则 token 会被开放重定向带到外站。
+        function safeUrl(u) {
+          try {
+            var x = new URL(u, location.origin);
+            if (x.protocol !== 'https:' && x.protocol !== 'http:') return '';
+            // 只允许本平台域名(tgfootball.me/cc/com/net 及其子域)。
+            if (!/(^|\.)tgfootball\.(me|cc|com|net)$/i.test(x.hostname)) return '';
+            return x.origin + x.pathname; // 去掉旧 query/fragment 防累加
+          } catch (e) { return ''; }
+        }
         var next = '/';
         try {
-          var stored = sessionStorage.getItem('tg.return_url');
-          if (stored && stored.indexOf(location.origin) === 0) {
-            // 去掉旧 query/fragment 防累加
-            next = stored.replace(/[?#].*$/, '');
+          var sp = new URLSearchParams(location.search || '');
+          var ret = sp.get('ret');
+          var safe = ret ? safeUrl(ret) : '';
+          if (safe) {
+            next = safe;
+          } else {
+            var stored = sessionStorage.getItem('tg.return_url');
+            if (stored && stored.indexOf(location.origin) === 0) {
+              next = stored.replace(/[?#].*$/, '');
+            }
           }
         } catch (e) {}
         sessionStorage.removeItem('tg.return_url');

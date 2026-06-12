@@ -21,6 +21,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
   static final _fmtBal = NumberFormat('#,##0.00');
 
   String _chain = 'trc20';
+  String _currency = 'USDT'; // 提现 token:trc20→USDT;erc20→USDT/USDC
   Wallet? _wallet;
   final _addressCtrl = TextEditingController();
   final _amountCtrl = TextEditingController(text: '500');
@@ -56,17 +57,17 @@ class _WithdrawPageState extends State<WithdrawPage> {
 
   double get _fee {
     if (_wallet == null) {
-      switch (_chain) {
-        case 'erc20': return 12;
-        case 'bep20': return 0.5;
-        default: return 1;
-      }
+      return _chain == 'erc20' ? 12 : 1;
     }
-    switch (_chain) {
-      case 'erc20': return _wallet!.withdrawFeeERC20;
-      case 'bep20': return _wallet!.withdrawFeeBEP20;
-      default: return _wallet!.withdrawFeeTRC20;
-    }
+    return _chain == 'erc20' ? _wallet!.withdrawFeeERC20 : _wallet!.withdrawFeeTRC20;
+  }
+
+  /// 切换链时纠正 token:trc20 只能 USDT;erc20 保留当前(USDT/USDC)。
+  void _selectChain(String chain) {
+    setState(() {
+      _chain = chain;
+      if (chain == 'trc20') _currency = 'USDT';
+    });
   }
 
   String get _etaText => tr('wd.eta_value');
@@ -103,7 +104,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
     });
     try {
       await widget.state.api
-          .submitWithdrawal(amount: amt, address: addr);
+          .submitWithdrawal(amount: amt, address: addr, chain: _chain, currency: _currency);
       _addressCtrl.clear();
       _amountCtrl.text = '500';
       if (mounted) {
@@ -219,6 +220,11 @@ class _WithdrawPageState extends State<WithdrawPage> {
                     const SizedBox(height: 14),
                     _label(tr('wd.network')),
                     _chainTabs(),
+                    if (_chain == 'erc20') ...[
+                      const SizedBox(height: 10),
+                      _label(tr('wd.token')),
+                      _currencyTabs(),
+                    ],
                     const SizedBox(height: 12),
                     _label(tr('wd.address_label')),
                     LightCard(
@@ -413,7 +419,6 @@ class _WithdrawPageState extends State<WithdrawPage> {
     final tabs = [
       ['trc20', 'TRC20', '${(w?.withdrawFeeTRC20 ?? 1).toStringAsFixed(w != null && w.withdrawFeeTRC20 == w.withdrawFeeTRC20.roundToDouble() ? 0 : 1)} USDT'],
       ['erc20', 'ERC20', '${(w?.withdrawFeeERC20 ?? 12).toStringAsFixed(w != null && w.withdrawFeeERC20 == w.withdrawFeeERC20.roundToDouble() ? 0 : 1)} USDT'],
-      ['bep20', 'BEP20', '${(w?.withdrawFeeBEP20 ?? 0.5).toStringAsFixed(1)} USDT'],
     ];
     return Row(
       children: tabs.map((c) {
@@ -423,7 +428,7 @@ class _WithdrawPageState extends State<WithdrawPage> {
             padding: const EdgeInsets.symmetric(horizontal: 3),
             child: InkWell(
               borderRadius: BorderRadius.circular(10),
-              onTap: () => setState(() => _chain = c[0]),
+              onTap: () => _selectChain(c[0]),
               child: Container(
                 height: 42,
                 decoration: BoxDecoration(
@@ -450,6 +455,41 @@ class _WithdrawPageState extends State<WithdrawPage> {
                             color: on ? T.brandDeep : T.inkLo)),
                   ],
                 ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // ERC20 下可选 USDT / USDC(均从 USDT 余额按 1:1 扣)。
+  Widget _currencyTabs() {
+    return Row(
+      children: ['USDT', 'USDC'].map((cur) {
+        final on = _currency == cur;
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => setState(() => _currency = cur),
+              child: Container(
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  gradient: on
+                      ? const LinearGradient(colors: [Color(0x2E2CD7FD), Color(0x0F2CD7FD)])
+                      : null,
+                  color: on ? null : Colors.white,
+                  border: Border.all(color: on ? T.brand : T.border),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(cur,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: on ? T.brandDeep : T.inkMd)),
               ),
             ),
           ),

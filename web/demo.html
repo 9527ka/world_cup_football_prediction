@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>足球直播</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --card2: #1c2330; --border: #2a3240;
+    --text: #e6edf3; --muted: #8b949e; --accent: #2ea7ff; --live: #ff4d4f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 12px; }
+  h1 { font-size: 18px; padding: 4px 0 10px; }
+  h1 small { color: var(--muted); font-weight: normal; font-size: 12px; margin-left: 8px; }
+
+  /* 播放器 */
+  #playerBox { display: none; margin-bottom: 12px; }
+  #playerBox.show { display: block; }
+  .player-ratio { position: relative; width: 100%; padding-top: 56.25%; background: #000; border-radius: 10px; overflow: hidden; }
+  .player-ratio iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  #playerTitle { font-size: 15px; font-weight: 600; margin: 8px 0 6px; }
+  #sourceBar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .src-btn { background: var(--card2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  .src-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .src-btn .hd { color: #ffd666; margin-left: 4px; }
+  .src-btn.active .hd { color: #fff; }
+  #closePlayer { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; margin-left: auto; }
+  .player-head { display: flex; align-items: center; }
+  .tip { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+  /* 搜索 */
+  #search { width: 100%; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 14px; outline: none; margin-bottom: 12px; }
+  #search:focus { border-color: var(--accent); }
+
+  /* 联赛分组 */
+  .league { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 14px 0 8px; }
+  .league img { width: 18px; height: 18px; border-radius: 3px; object-fit: contain; }
+
+  /* 比赛卡片 */
+  .match { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; transition: border-color .15s; }
+  .match:hover { border-color: var(--accent); }
+  .teams { flex: 1; min-width: 0; }
+  .trow { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+  .trow img { width: 20px; height: 20px; border-radius: 50%; background: #222; object-fit: cover; flex: none; }
+  .trow .noimg { width: 20px; height: 20px; border-radius: 50%; background: var(--card2); flex: none; display: inline-block; }
+  .trow .tname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trow .goals { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .meta { text-align: right; flex: none; min-width: 92px; }
+  .meta .time { color: var(--muted); font-size: 12px; }
+  .badge-live { display: inline-block; background: var(--live); color: #fff; font-size: 11px; border-radius: 4px; padding: 1px 6px; margin-bottom: 3px; animation: blink 1.6s infinite; }
+  .badge-end { display: inline-block; background: var(--card2); color: var(--muted); font-size: 11px; border-radius: 4px; padding: 1px 6px; margin-bottom: 3px; }
+  .badge-hot { display: inline-block; background: #d8862218; color: #f0a04b; border: 1px solid #f0a04b55; font-size: 11px; border-radius: 4px; padding: 1px 6px; margin-bottom: 3px; }
+  @keyframes blink { 50% { opacity: .55; } }
+
+  #status { color: var(--muted); text-align: center; padding: 24px 0; }
+  .err { color: var(--live); }
+  @media (max-width: 600px) { .wrap { padding: 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚽ 足球直播<small>仅供测试</small></h1>
+
+  <div id="playerBox">
+    <!-- sandbox 不授予 allow-popups / allow-top-navigation:embed 内广告脚本无法弹新页或把页面跳走 -->
+    <div class="player-ratio"><iframe id="playerFrame"
+      sandbox="allow-scripts allow-same-origin allow-presentation"
+      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+      allowfullscreen referrerpolicy="no-referrer"></iframe></div>
+    <div class="player-head">
+      <div id="playerTitle"></div>
+      <button id="closePlayer" onclick="closePlayer()">✕ 关闭</button>
+    </div>
+    <div id="sourceBar"></div>
+    <div class="tip">已拦截线路内弹窗/跳转广告;若某线路黑屏不播,换一条线路。</div>
+  </div>
+
+  <input id="search" type="search" placeholder="搜索球队 / 联赛…（如 world cup、korea）">
+  <div id="list"></div>
+  <div id="status">加载中…</div>
+</div>
+
+<script>
+const V2 = 'https://api.sportsrc.org/v2/';
+const V1 = 'https://api.sportsrc.org/';
+const KEY = '225919a40ae3e648af9c929273f9cf1d'; // Free 1000/天,demo 专用
+let groups = [];        // [{league:{name,logo}, matches:[...]}]
+let currentDetail = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// 全站口径:纽约时间显示
+const nyFmt = new Intl.DateTimeFormat('zh-CN', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+const fmtTime = ms => ms ? nyFmt.format(new Date(ms)) + ' (纽约)' : '';
+
+function utcDate(offsetDays) {
+  const d = new Date(Date.now() + offsetDays * 86400e3);
+  return d.toISOString().slice(0, 10);
+}
+
+async function v2(params) {
+  const r = await fetch(V2 + '?' + new URLSearchParams(params), { headers: { 'X-API-KEY': KEY } });
+  if (r.status === 429) throw new Error('quota'); // 当日 1000 次用尽
+  const j = await r.json();
+  if (!j.success) throw new Error(j.message || 'bad response');
+  return j;
+}
+
+async function loadMatches() {
+  try {
+    // 今天 + 明天(UTC 日界),合并按联赛分组
+    const days = await Promise.all([0, 1].map(o =>
+      v2({ type: 'matches', sport: 'football', date: utcDate(o) }).catch(() => null)));
+    const map = new Map();
+    for (const day of days) {
+      if (!day || !Array.isArray(day.data)) continue;
+      for (const g of day.data) {
+        const k = g.league?.name || 'Other';
+        if (!map.has(k)) map.set(k, { league: g.league || { name: k }, matches: [] });
+        const seen = map.get(k);
+        for (const m of g.matches || []) {
+          if (!seen.matches.some(x => x.id === m.id)) seen.matches.push(m);
+        }
+      }
+    }
+    groups = [...map.values()];
+    // 世界杯置顶,组内按时间
+    groups.sort((a, b) => (b.league.name === 'FIFA World Cup') - (a.league.name === 'FIFA World Cup'));
+    groups.forEach(g => g.matches.sort((a, b) => (a.timestamp || 9e15) - (b.timestamp || 9e15)));
+    if (!groups.length) throw new Error('V2 无数据');
+    render();
+    $('status').textContent = '';
+  } catch (e) {
+    // V2 失败(配额/网络)→ 回退免 key 的 V1
+    try { await loadV1(); $('status').textContent = ''; }
+    catch (e2) { $('status').innerHTML = '<span class="err">加载失败：' + esc(e.message) + ' / ' + esc(e2.message) + '</span>'; }
+  }
+}
+
+async function loadV1() {
+  const r = await fetch(V1 + '?data=matches&category=football');
+  const j = await r.json();
+  if (!j.success || !Array.isArray(j.data)) throw new Error(j.message || 'V1 bad response');
+  groups = [{ league: { name: 'Football (V1 兜底,无联赛/比分)' }, matches: j.data.map(m => ({
+    id: m.id, _v1: true, title: m.title, timestamp: m.date, status: '', status_detail: '',
+    popular: m.popular, teams: m.teams, score: null,
+  })) }];
+  render();
+}
+
+const isLive = m => m.status === 'inprogress';
+const isEnded = m => /finished|ended|ft|after/i.test(m.status || '');
+
+function render() {
+  const q = $('search').value.trim().toLowerCase();
+  let html = '';
+  for (const g of groups) {
+    const ms = g.matches.filter(m => {
+      if (!q) return true;
+      const hay = (g.league.name + ' ' + m.title + ' ' + (m.teams?.home?.name || '') + ' ' + (m.teams?.away?.name || '')).toLowerCase();
+      return q.split(/\s+/).every(w => hay.includes(w));
+    });
+    if (!ms.length) continue;
+    html += '<div class="league">' + (g.league.logo ? '<img src="' + esc(g.league.logo) + '" loading="lazy">' : '') + esc(g.league.name) + '</div>';
+    html += ms.map(m => {
+      const h = m.teams?.home, a = m.teams?.away;
+      const badge = t => t?.badge ? '<img src="' + esc(t.badge) + '" loading="lazy" onerror="this.outerHTML=\'<i class=noimg></i>\'">' : '<i class="noimg"></i>';
+      const live = isLive(m);
+      const goal = (side) => (live || isEnded(m)) && m.score?.current ? '<span class="goals">' + m.score.current[side] + '</span>' : '';
+      const tag = live ? '<span class="badge-live">● ' + esc(m.status_detail || 'LIVE') + '</span>'
+        : isEnded(m) ? '<span class="badge-end">完场</span>'
+        : (m.popular ? '<span class="badge-hot">热门</span>' : '');
+      return '<div class="match" onclick="openMatch(this.dataset.id,this.dataset.v1)" data-id="' + esc(m.id) + '" data-v1="' + (m._v1 ? 1 : '') + '">' +
+        '<div class="teams">' +
+          '<div class="trow">' + badge(h) + '<span class="tname">' + esc(h?.name || m.title) + '</span>' + goal('home') + '</div>' +
+          '<div class="trow">' + badge(a) + '<span class="tname">' + esc(a?.name || '') + '</span>' + goal('away') + '</div>' +
+        '</div>' +
+        '<div class="meta">' + tag + '<div class="time">' + fmtTime(m.timestamp) + '</div></div>' +
+      '</div>';
+    }).join('');
+  }
+  $('list').innerHTML = html || '<div id="status2" style="color:var(--muted);text-align:center;padding:24px 0">没有匹配的比赛</div>';
+}
+
+async function openMatch(id, v1) {
+  $('status').textContent = '获取直播源…';
+  try {
+    let title, srcs;
+    if (v1) {
+      const r = await fetch(V1 + '?data=detail&category=football&id=' + encodeURIComponent(id));
+      const j = await r.json();
+      if (!j.success || !j.data) throw new Error(j.message || 'bad response');
+      title = j.data.title; srcs = j.data.sources || [];
+    } else {
+      const j = await v2({ type: 'detail', id });
+      title = j.data?.match_info?.title || ''; srcs = j.data?.sources || [];
+    }
+    srcs = srcs.filter(s => s.embedUrl);
+    if (!srcs.length) { $('status').innerHTML = '<span class="err">该场暂无直播源</span>'; setTimeout(() => $('status').textContent = '', 2500); return; }
+    currentDetail = { title, _srcs: srcs };
+    $('playerTitle').textContent = title;
+    $('sourceBar').innerHTML = srcs.map((s, i) =>
+      '<button class="src-btn" id="src' + i + '" onclick="playSource(' + i + ')">线路' + (s.streamNo || i + 1) +
+      (s.language && s.language !== 'Unknown' ? ' · ' + esc(s.language) : '') +
+      (s.source ? ' · ' + esc(s.source) : '') +
+      (s.hd ? '<span class="hd">HD</span>' : '') +
+      (s.viewers ? ' · ' + s.viewers + '👀' : '') + '</button>').join('');
+    $('playerBox').classList.add('show');
+    playSource(0);
+    $('status').textContent = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) {
+    $('status').innerHTML = '<span class="err">获取失败：' + esc(e.message) + '</span>';
+  }
+}
+
+function playSource(i) {
+  const srcs = currentDetail._srcs;
+  $('playerFrame').src = srcs[i].embedUrl;
+  srcs.forEach((_, k) => $('src' + k).classList.toggle('active', k === i));
+}
+
+function closePlayer() {
+  $('playerFrame').src = 'about:blank';
+  $('playerBox').classList.remove('show');
+}
+
+$('search').addEventListener('input', render);
+loadMatches();
+</script>
+</body>
+</html>

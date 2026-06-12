@@ -9,6 +9,7 @@ import '../services/api_client.dart';
 import '../services/app_state.dart';
 import '../services/auth_gate.dart';
 import '../services/i18n.dart';
+import '../services/telegram.dart';
 import '../theme/tokens.dart';
 
 class LoginWall {
@@ -66,7 +67,7 @@ class LoginRequiredCard extends StatelessWidget {
             const SizedBox(height: 14),
             Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: T.ink)),
             const SizedBox(height: 6),
-            Text(tr('login.subtitle'),
+            Text(isInMiniApp() ? tr('login.tg_reload_hint') : tr('login.subtitle'),
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 12, color: T.inkMd, height: 1.5)),
             const SizedBox(height: 16),
@@ -75,6 +76,12 @@ class LoginRequiredCard extends StatelessWidget {
               height: 42,
               child: ElevatedButton(
                 onPressed: () async {
+                  // Mini App 内未登录 = initData 暂缺/失效:reload 重取新 initData 自愈,
+                  // 而不是去走浏览器邮箱/OAuth(在 Telegram WebView 内无效)。
+                  if (isInMiniApp()) {
+                    Telegram.reloadApp();
+                    return;
+                  }
                   final ok = await requireLogin(context, state);
                   if (ok && onLoggedIn != null) onLoggedIn!();
                 },
@@ -87,7 +94,7 @@ class LoginRequiredCard extends StatelessWidget {
                 // 不放 TG 图标:LoginRequiredCard 进入的是混合登录弹层(邮箱 + TG),
                 // 不应暗示只有 TG。文案"登录/注册"通用,跟 LoginWall 内的 Telegram-only
                 // 按钮(`login.cta` = "使用 Telegram 授权登录")分开。
-                child: Text(tr('login.cta_signup'),
+                child: Text(isInMiniApp() ? tr('login.tg_reload_cta') : tr('login.cta_signup'),
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
               ),
             ),
@@ -390,13 +397,18 @@ class _LoginWallSheetState extends State<_LoginWallSheet> {
   }
 
   Widget _telegramPanel() {
+    // Mini App 内:不走浏览器 OAuth(WebView 内无效),改为「重新加载」按钮 —
+    // reload 让 Telegram 重新注入新 initData,initialize() 自动登录。
+    final miniApp = isInMiniApp();
     return Column(
       children: [
         SizedBox(
           width: double.infinity,
           height: 46,
           child: ElevatedButton(
-            onPressed: _busy ? null : _onTelegramTap,
+            onPressed: _busy
+                ? null
+                : (miniApp ? () => Telegram.reloadApp() : _onTelegramTap),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF229ED9),
               foregroundColor: Colors.white,
@@ -410,9 +422,9 @@ class _LoginWallSheetState extends State<_LoginWallSheet> {
                 : Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.send_rounded, size: 18),
+                      Icon(miniApp ? Icons.refresh_rounded : Icons.send_rounded, size: 18),
                       const SizedBox(width: 8),
-                      Text(tr('login.cta'),
+                      Text(miniApp ? tr('login.tg_reload_cta') : tr('login.cta'),
                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
                     ],
                   ),
@@ -420,7 +432,7 @@ class _LoginWallSheetState extends State<_LoginWallSheet> {
         ),
         const SizedBox(height: 10),
         Text(
-          tr('login.popup_note'),
+          miniApp ? tr('login.tg_reload_hint') : tr('login.popup_note'),
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 11, color: T.inkLo, height: 1.5),
         ),

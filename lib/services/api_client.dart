@@ -81,6 +81,16 @@ class ApiClient {
   Uri _uri(String path, [Map<String, String>? q]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: q);
 
+  /// 把 `/uploads/xxx.png` 这类相对路径解析成可直接喂给 Image.network 的绝对 URL。
+  /// 独立 API 域(baseUrl 非空)用 baseUrl;同源部署(baseUrl 空)用当前页面 origin。
+  /// 已是 http(s) 绝对地址则原样返回。
+  String mediaUrl(String path) {
+    if (path.isEmpty) return '';
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    if (baseUrl.isNotEmpty) return '$baseUrl$path';
+    return Uri.base.resolve(path).toString();
+  }
+
   Completer<void>? _refreshCompleter;
 
   Future<void> _ensureTokenRefreshed() async {
@@ -241,6 +251,8 @@ class ApiClient {
     return AuthBotConfig(
       botUsername: (body['botUsername'] as String?) ?? '',
       botId: (body['botId'] as num?)?.toInt() ?? 0,
+      loginOrigin: ((body['loginOrigin'] as String?) ?? '').trim(),
+      geoLang: ((body['geoLang'] as String?) ?? '').trim(),
     );
   }
 
@@ -536,10 +548,11 @@ class ApiClient {
     required String txHash,
     String proofUrl = '',
     String chain = 'trc20',
+    String currency = 'USDT',
   }) async {
     final r = await _authPost(
       _uri('/api/deposits'),
-      body: jsonEncode({'amount': amount, 'txHash': txHash, 'proofUrl': proofUrl, 'chain': chain}),
+      body: jsonEncode({'amount': amount, 'txHash': txHash, 'proofUrl': proofUrl, 'chain': chain, 'currency': currency}),
     );
     _check(r);
     return Deposit.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
@@ -548,13 +561,27 @@ class ApiClient {
   Future<Withdrawal> submitWithdrawal({
     required double amount,
     required String address,
+    String chain = 'trc20',
+    String currency = 'USDT',
   }) async {
     final r = await _authPost(
       _uri('/api/withdrawals'),
-      body: jsonEncode({'amount': amount, 'address': address}),
+      body: jsonEncode({'amount': amount, 'address': address, 'chain': chain, 'currency': currency}),
     );
     _check(r);
     return Withdrawal.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+  }
+
+  /// 自助兑换:把 ETH/BTC 余额按实时汇率换成 USDT。返回最新钱包(含三币余额)。
+  Future<Wallet> convertBalance({required String from, required double amount}) async {
+    final r = await _authPost(
+      _uri('/api/me/convert'),
+      body: jsonEncode({'from': from, 'amount': amount}),
+    );
+    _check(r);
+    // 后端返回 {rate, usdtAmount, balance, balanceEth, balanceBtc};复用 Wallet.fromJson
+    // 取三币余额(其余字段缺省,调用方拿到后通常会重新 getWallet 刷新地址/费率)。
+    return Wallet.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
   }
 
   /// 提交串关。
@@ -617,13 +644,15 @@ class ApiClient {
   void _check(http.Response r) {
     if (r.statusCode >= 200 && r.statusCode < 300) return;
     String msg;
+    Map<String, dynamic>? data;
     try {
       final m = jsonDecode(r.body) as Map<String, dynamic>;
       msg = m['error']?.toString() ?? r.body;
+      data = m;
     } catch (_) {
       msg = r.body;
     }
-    throw ApiException(r.statusCode, msg);
+    throw ApiException(r.statusCode, msg, data);
   }
 }
 
@@ -655,6 +684,7 @@ String _zhError(String raw) {
     'duplicate parlay request in progress': 'err.duplicate_parlay',
     'too close to kickoff': 'err.too_close_to_kickoff',
     'market temporarily locked (goal scored)': 'err.market_locked_goal',
+    'market not open yet (awaiting bookmaker odds)': 'err.market_not_open',
     'low odds single bet limit exceeded': 'err.low_odds_limit',
     'quarter-line AH not allowed in parlay leg': 'err.quarter_line_in_parlay',
     'all legs settled — wait for payout': 'err.parlay_all_legs_settled',
@@ -700,9 +730,15 @@ String _zhError(String raw) {
 
   if (raw.startsWith('parlay needs at least')) return tr('err.parlay_min_legs');
   if (raw.startsWith('parlay limited to')) return tr('err.parlay_max_legs');
+  // 提现流水门槛未达标(后端:turnover requirement not met: need X more)
+  if (raw.startsWith('turnover requirement not met')) return tr('err.turnover_not_met');
   final notBettable = RegExp(r'^match (\d+) not bettable$').firstMatch(raw);
   if (notBettable != null) {
     return tr('err.match_not_bettable').replaceAll('{id}', notBettable.group(1)!);
+  }
+  final notOpenYet = RegExp(r'^match (\d+) market not open yet$').firstMatch(raw);
+  if (notOpenYet != null) {
+    return tr('err.match_market_not_open').replaceAll('{id}', notOpenYet.group(1)!);
   }
   final notAvail = RegExp(r'^match (\d+) not available$').firstMatch(raw);
   if (notAvail != null) {
@@ -731,10 +767,29 @@ class ApiException implements Exception {
   final int statusCode;
   /// 原始服务端 error key,debug/日志用。
   final String message;
-  ApiException(this.statusCode, this.message);
+  /// 后端 error JSON 的完整 body(含 stakeCap / oddsLimit 等附加字段),用于
+  /// 拼出更具体的用户提示。解析失败时为 null。
+  final Map<String, dynamic>? data;
+  ApiException(this.statusCode, this.message, [this.data]);
 
   /// 给用户看的中文。toString() 默认调这个,所以页面 catch (e) 直接显示 e.toString() 也是中文。
-  String get userMessage => _zhError(message);
+  String get userMessage {
+    final base = _zhError(message);
+    // 低赔单注上限:在本地化文案后附上后端返回的 stakeCap,告诉用户上限多少、
+    // 降低金额即可下注。直接拼数字,避免改动 16 种语言的翻译。
+    if (message == 'low odds single bet limit exceeded' && data != null) {
+      final cap = data!['stakeCap'];
+      if (cap != null) return '$base (${_fmtNum(cap)})';
+    }
+    return base;
+  }
+
+  static String _fmtNum(dynamic v) {
+    if (v is num) {
+      return v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+    }
+    return v.toString();
+  }
 
   @override
   String toString() => userMessage;
@@ -743,9 +798,13 @@ class ApiException implements Exception {
 /// Telegram bot 元数据,/api/auth/config 返回。
 /// 浏览器环境登录(LoginWidget / oauth.telegram.org)需要 botUsername / botId。
 class AuthBotConfig {
-  AuthBotConfig({required this.botUsername, required this.botId});
+  AuthBotConfig({required this.botUsername, required this.botId, this.loginOrigin = '', this.geoLang = ''});
   final String botUsername;
   final int botId;
+  /// 规范登录域名(含协议)。多域名部署时所有域名的 OAuth 都走它;空 = 用当前域名。
+  final String loginOrigin;
+  /// 按访客 IP 国家(Cloudflare CF-IPCountry)建议的界面语言码;空=无建议。
+  final String geoLang;
 
   bool get isConfigured => botUsername.isNotEmpty && botId > 0;
 }

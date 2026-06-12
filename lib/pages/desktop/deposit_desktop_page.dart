@@ -2,26 +2,34 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../models/match.dart';
-import '../services/app_state.dart';
-import '../services/file_picker_web.dart' as file_picker;
-import '../services/i18n.dart';
-import '../services/toast.dart';
-import '../theme/tokens.dart';
-import '../widgets/chain_icon.dart';
-import '../widgets/light_card.dart';
-import '../widgets/login_wall.dart';
+import '../../models/match.dart';
+import '../../services/app_state.dart';
+import '../../services/file_picker_web.dart' as file_picker;
+import '../../services/i18n.dart';
+import '../../services/toast.dart';
+import '../../theme/tokens.dart';
+import '../../widgets/chain_icon.dart';
+import '../../widgets/light_card.dart';
+import '../../widgets/login_wall.dart';
 
-/// 08 · 充值 — 链选 + 地址 + 凭证 + 金额 + 提交。
-class DepositPage extends StatefulWidget {
-  const DepositPage({super.key, required this.state});
+/// 桌面充值。复用 getWallet / uploadProof / submitDeposit(提交逻辑零改动)。
+/// 两栏:左(链选 + 地址/QR/复制/上传)| 右(金额/哈希表单 + 注意事项)。
+/// 无内置返回栏;提交成功后通过 [onClose] 退回。
+class DepositDesktopPage extends StatefulWidget {
+  const DepositDesktopPage({
+    super.key,
+    required this.state,
+    required this.onClose,
+  });
+
   final AppState state;
+  final VoidCallback onClose;
 
   @override
-  State<DepositPage> createState() => _DepositPageState();
+  State<DepositDesktopPage> createState() => _DepositDesktopPageState();
 }
 
-class _DepositPageState extends State<DepositPage> {
+class _DepositDesktopPageState extends State<DepositDesktopPage> {
   String _chain = 'trc20';
   String _currency = 'USDT';
   Wallet? _wallet;
@@ -30,7 +38,6 @@ class _DepositPageState extends State<DepositPage> {
   String _proofUrl = '';
   bool _submitting = false;
   String? _error;
-  String? _ok;
   bool _walletLoading = true;
   String? _walletError;
 
@@ -38,6 +45,13 @@ class _DepositPageState extends State<DepositPage> {
   void initState() {
     super.initState();
     _loadWallet();
+  }
+
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    _hashCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadWallet() async {
@@ -54,13 +68,30 @@ class _DepositPageState extends State<DepositPage> {
     });
     try {
       final w = await widget.state.api.getWallet();
-      if (mounted) setState(() { _wallet = w; _walletLoading = false; });
+      if (mounted) setState(() {
+        _wallet = w;
+        _walletLoading = false;
+      });
     } catch (e) {
-      if (mounted) setState(() { _walletLoading = false; _walletError = '${tr('dep.wallet_error')}: $e'; });
+      if (mounted) setState(() {
+        _walletLoading = false;
+        _walletError = '${tr('dep.wallet_error')}: $e';
+      });
     }
   }
 
-  // 每条链允许的币种(ERC20 的 USDT/USDC 与 ETH 共用 ETH 地址)。
+  String _currentAddress() {
+    if (_wallet == null) return '';
+    switch (_chain) {
+      case 'eth':
+        return _wallet!.ethDepositAddress;
+      case 'btc':
+        return _wallet!.btcDepositAddress;
+      default:
+        return _wallet!.depositAddress;
+    }
+  }
+
   List<String> _currenciesForChain(String chain) {
     switch (chain) {
       case 'eth':
@@ -72,7 +103,6 @@ class _DepositPageState extends State<DepositPage> {
     }
   }
 
-  // 切链时把币种重置为该链的默认(第一个)。
   void _onChainChanged(String chain) {
     setState(() {
       _chain = chain;
@@ -92,8 +122,7 @@ class _DepositPageState extends State<DepositPage> {
     if (pf == null) return;
     setState(() => _submitting = true);
     try {
-      final url =
-          await widget.state.api.uploadProof(pf.bytes, filename: pf.name);
+      final url = await widget.state.api.uploadProof(pf.bytes, filename: pf.name);
       if (mounted) setState(() => _proofUrl = url);
     } catch (e) {
       if (mounted) setState(() => _error = '${tr('dep.upload_fail')}: $e');
@@ -122,7 +151,6 @@ class _DepositPageState extends State<DepositPage> {
     setState(() {
       _submitting = true;
       _error = null;
-      _ok = null;
     });
     try {
       await widget.state.api.submitDeposit(
@@ -135,11 +163,8 @@ class _DepositPageState extends State<DepositPage> {
       _amountCtrl.clear();
       _hashCtrl.clear();
       if (mounted) {
-        setState(() {
-          _proofUrl = '';
-          _ok = null;
-        });
-        await _showDepositSuccessDialog(amt);
+        setState(() => _proofUrl = '');
+        await _showSuccess(amt);
       }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -148,10 +173,7 @@ class _DepositPageState extends State<DepositPage> {
     }
   }
 
-  /// Success popup — shown after a deposit POST returns 200. We deliberately
-  /// don't auto-dismiss: the user should consciously close it so they remember
-  /// the deposit is "submitted, awaiting admin review" (not "已到账").
-  Future<void> _showDepositSuccessDialog(double amount) async {
+  Future<void> _showSuccess(double amount) async {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
@@ -168,20 +190,15 @@ class _DepositPageState extends State<DepositPage> {
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${amount.toStringAsFixed(_curCfg().decimals)} $_currency',
-                style: const TextStyle(
-                    fontSize: 22, fontWeight: FontWeight.w800, color: T.brandDeep)),
-          ],
-        ),
+        content: Text(
+            '${amount.toStringAsFixed(_curCfg().decimals)} $_currency',
+            style: const TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w800, color: T.brandDeep)),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              Navigator.of(context).pop(true);
+              widget.onClose();
             },
             child: Text(tr('common.confirm')),
           ),
@@ -192,88 +209,75 @@ class _DepositPageState extends State<DepositPage> {
 
   @override
   Widget build(BuildContext context) {
-    // 浏览器未登录:用引导卡替代表单。Mini App 内 initialize() 已登录,不进这里。
     if (!widget.state.isAuthenticated) {
-      return Scaffold(
-        backgroundColor: T.bgPage,
-        body: Container(
-          decoration: const BoxDecoration(gradient: T.pageGradient),
-          child: SafeArea(
-            child: Column(
-              children: [
-                _topBar(),
-                Expanded(
-                  child: LoginRequiredCard(
+      return ListView(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: LoginRequiredCard(
                     state: widget.state,
                     label: tr('dep.title'),
-                    onLoggedIn: _loadWallet,
-                  ),
-                ),
-              ],
+                    onLoggedIn: _loadWallet),
+              ),
             ),
           ),
-        ),
+        ],
       );
     }
-    return Scaffold(
-      backgroundColor: T.bgPage,
-      body: Container(
-        decoration: const BoxDecoration(gradient: T.pageGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _topBar(),
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      children: [
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 880),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _label(tr('dep.step1')),
-                    _chainPicker(),
-                    _currencyPicker(),
-                    const SizedBox(height: 14),
-                    _addressCard(),
-                    const SizedBox(height: 14),
-                    _amountForm(),
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(_error!, style: const TextStyle(color: T.down)),
+                    Expanded(
+                      flex: 5,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _label(tr('dep.step1')),
+                          _chainPicker(),
+                          _currencyPicker(),
+                          const SizedBox(height: 12),
+                          _addressCard(),
+                        ],
                       ),
-                    if (_ok != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(_ok!, style: const TextStyle(color: T.upDark)),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      flex: 5,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _amountForm(),
+                          if (_error != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 10),
+                              child: Text(_error!,
+                                  style: const TextStyle(color: T.down)),
+                            ),
+                          const SizedBox(height: 14),
+                          _notes(),
+                        ],
                       ),
-                    const SizedBox(height: 14),
-                    _notes(),
+                    ),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _topBar() {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(
-        color: Color(0xC7FFFFFF),
-        border: Border(bottom: BorderSide(color: T.border)),
-      ),
-      child: Row(
-        children: [
-          IconButton(
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.chevron_left, color: T.ink)),
-          Text(tr('dep.title'),
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: T.ink)),
-          const Spacer(),
-        ],
-      ),
+      ],
     );
   }
 
@@ -281,8 +285,34 @@ class _DepositPageState extends State<DepositPage> {
         padding: const EdgeInsets.only(bottom: 8),
         child: Text(t,
             style: const TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w700, color: T.inkMd)),
+                fontSize: 12, fontWeight: FontWeight.w700, color: T.inkMd)),
       );
+
+  Widget _currencyPicker() {
+    final curs = _currenciesForChain(_chain);
+    if (curs.length <= 1) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Wrap(
+        spacing: 8,
+        children: curs.map((cur) {
+          final on = _currency == cur;
+          return ChoiceChip(
+            label: Text(cur,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: on ? FontWeight.w800 : FontWeight.w600,
+                    color: on ? Colors.white : T.ink)),
+            selected: on,
+            selectedColor: T.brand,
+            backgroundColor: const Color(0xFFEAF1F8),
+            visualDensity: VisualDensity.compact,
+            onSelected: (_) => setState(() => _currency = cur),
+          );
+        }).toList(),
+      ),
+    );
+  }
 
   Widget _chainPicker() {
     final chains = <_Chain>[
@@ -321,30 +351,20 @@ class _DepositPageState extends State<DepositPage> {
                       children: [
                         Text(c.name,
                             style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w800, color: T.ink)),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: T.ink)),
                         const SizedBox(height: 2),
                         Text(c.note,
                             style: const TextStyle(
-                                fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
+                                fontSize: 10,
+                                color: T.inkLo,
+                                fontWeight: FontWeight.w600)),
                       ],
                     ),
                   ),
-                  Container(
-                    width: 18, height: 18,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: on ? Colors.white : Colors.transparent,
-                      border: Border.all(
-                          color: on ? T.brand : T.inkSubtle,
-                          width: on ? 5 : 1.5),
-                      boxShadow: on
-                          ? const [
-                              BoxShadow(
-                                  color: T.brand, blurRadius: 0, spreadRadius: 1)
-                            ]
-                          : null,
-                    ),
-                  ),
+                  Icon(on ? Icons.radio_button_checked : Icons.radio_button_off,
+                      color: on ? T.brand : T.inkSubtle, size: 20),
                 ],
               ),
             ),
@@ -354,50 +374,16 @@ class _DepositPageState extends State<DepositPage> {
     );
   }
 
-  // 币种子选择器:仅当当前链有多个币种(ETH 链:ETH/USDT/USDC)时显示。
-  Widget _currencyPicker() {
-    final curs = _currenciesForChain(_chain);
-    if (curs.length <= 1) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Wrap(
-        spacing: 8,
-        children: curs.map((cur) {
-          final on = _currency == cur;
-          return ChoiceChip(
-            label: Text(cur,
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: on ? FontWeight.w800 : FontWeight.w600,
-                    color: on ? Colors.white : T.ink)),
-            selected: on,
-            selectedColor: T.brand,
-            backgroundColor: const Color(0xFFEAF1F8),
-            visualDensity: VisualDensity.compact,
-            onSelected: (_) => setState(() => _currency = cur),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  String _currentAddress() {
-    if (_wallet == null) return '';
-    switch (_chain) {
-      case 'eth': return _wallet!.ethDepositAddress;
-      case 'btc': return _wallet!.btcDepositAddress;
-      default: return _wallet!.depositAddress;
-    }
-  }
-
   Widget _addressCard() {
     final addr = _walletError != null
         ? _walletError!
         : _walletLoading
             ? tr('dep.wallet_loading')
-            : (_currentAddress().isEmpty ? tr('dep.addr_not_set') : _currentAddress());
+            : (_currentAddress().isEmpty
+                ? tr('dep.addr_not_set')
+                : _currentAddress());
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
             begin: Alignment.topLeft,
@@ -405,10 +391,7 @@ class _DepositPageState extends State<DepositPage> {
             colors: [Colors.white, Color(0xFFF4F8FC)]),
         border: Border.all(color: T.border),
         borderRadius: BorderRadius.circular(18),
-        boxShadow: const [
-          BoxShadow(
-              color: Color(0x0F0E2238), blurRadius: 14, offset: Offset(0, 4))
-        ],
+        boxShadow: T.shadowCard,
       ),
       child: Column(
         children: [
@@ -416,19 +399,16 @@ class _DepositPageState extends State<DepositPage> {
           // 真实二维码:内容 = 当前充值地址,随链/币种切换自动重建;高容错(H)
           // 以便中心叠加链图标后钱包仍可扫描识别。地址为空时显示占位图标。
           Container(
-            width: 160, height: 160,
+            width: 150,
+            height: 150,
             decoration: BoxDecoration(
               color: Colors.white,
               border: Border.all(color: T.border),
               borderRadius: BorderRadius.circular(14),
-              boxShadow: const [
-                BoxShadow(
-                    color: Color(0x140E2238), blurRadius: 16, offset: Offset(0, 4))
-              ],
             ),
             child: _currentAddress().isEmpty
                 ? Center(
-                    child: Icon(Icons.qr_code_2, size: 72, color: T.border))
+                    child: Icon(Icons.qr_code_2, size: 68, color: T.border))
                 : Stack(
                     alignment: Alignment.center,
                     children: [
@@ -437,20 +417,21 @@ class _DepositPageState extends State<DepositPage> {
                         child: QrImageView(
                           data: _currentAddress(),
                           version: QrVersions.auto,
-                          size: 140,
+                          size: 130,
                           backgroundColor: Colors.white,
                           errorCorrectionLevel: QrErrorCorrectLevel.H,
                         ),
                       ),
                       Container(
-                        width: 40, height: 40,
+                        width: 38,
+                        height: 38,
                         decoration: BoxDecoration(
                           color: Colors.white,
                           shape: BoxShape.circle,
                           border: Border.all(color: Colors.white, width: 3),
                         ),
                         alignment: Alignment.center,
-                        child: ChainIcon(chain: _chain, size: 34),
+                        child: ChainIcon(chain: _chain, size: 32),
                       ),
                     ],
                   ),
@@ -483,8 +464,6 @@ class _DepositPageState extends State<DepositPage> {
                   backgroundColor: T.brand,
                   foregroundColor: Colors.white,
                   minimumSize: const Size(0, 36),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
@@ -504,9 +483,7 @@ class _DepositPageState extends State<DepositPage> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: T.brand,
                     foregroundColor: Colors.white,
-                    minimumSize: const Size(0, 38),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
+                    minimumSize: const Size(0, 40),
                   ),
                 ),
               ),
@@ -515,19 +492,19 @@ class _DepositPageState extends State<DepositPage> {
                 child: OutlinedButton.icon(
                   onPressed: _pickProof,
                   icon: const Icon(Icons.image_outlined, size: 14),
-                  label: Text(_proofUrl.isEmpty ? tr('dep.upload_proof') : tr('dep.uploaded')),
+                  label: Text(_proofUrl.isEmpty
+                      ? tr('dep.upload_proof')
+                      : tr('dep.uploaded')),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: T.brandDeep,
                     side: const BorderSide(color: T.brand),
-                    minimumSize: const Size(0, 38),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
+                    minimumSize: const Size(0, 40),
                   ),
                 ),
               ),
             ],
           ),
-          // 已上传凭证 → 显示缩略图,点击全屏放大核对
+          // 已上传凭证 → 居中缩略图,点击全屏放大核对
           if (_proofUrl.isNotEmpty) ...[
             const SizedBox(height: 10),
             Align(
@@ -547,7 +524,8 @@ class _DepositPageState extends State<DepositPage> {
                           width: 72,
                           height: 72,
                           color: Colors.black12,
-                          child: const Icon(Icons.broken_image, size: 20, color: Colors.black38),
+                          child: const Icon(Icons.broken_image,
+                              size: 20, color: Colors.black38),
                         ),
                       ),
                     ),
@@ -560,7 +538,8 @@ class _DepositPageState extends State<DepositPage> {
                           color: Colors.black54,
                           borderRadius: BorderRadius.circular(4),
                         ),
-                        child: const Icon(Icons.zoom_in, size: 13, color: Colors.white),
+                        child: const Icon(Icons.zoom_in,
+                            size: 13, color: Colors.white),
                       ),
                     ),
                   ],
@@ -601,28 +580,31 @@ class _DepositPageState extends State<DepositPage> {
 
   Widget _amountForm() {
     return LightCard(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _label(tr('dep.step3')),
           TextField(
             controller: _amountCtrl,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(color: T.ink, fontFamily: T.fontMono, fontSize: 16),
-            decoration: _input(hint: '${tr('dep.amount_hint')} $_currency'),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(
+                color: T.ink, fontFamily: T.fontMono, fontSize: 16),
+            decoration: _input(
+                hint:
+                    '${tr('dep.amount_hint')} $_currency'),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: _hashCtrl,
-            style: const TextStyle(color: T.ink, fontFamily: T.fontMono, fontSize: 13),
+            style: const TextStyle(
+                color: T.ink, fontFamily: T.fontMono, fontSize: 13),
             decoration: _input(hint: tr('dep.hash_hint')),
           ),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
-            height: 44,
+            height: 46,
             child: ElevatedButton(
               onPressed: _submitting ? null : _submit,
               style: ElevatedButton.styleFrom(
@@ -631,8 +613,10 @@ class _DepositPageState extends State<DepositPage> {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
-              child: Text(_submitting ? tr('dep.submitting') : tr('dep.submit_btn'),
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+              child: Text(
+                  _submitting ? tr('dep.submitting') : tr('dep.submit_btn'),
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w800)),
             ),
           ),
         ],
@@ -653,18 +637,20 @@ class _DepositPageState extends State<DepositPage> {
         children: [
           Text(tr('dep.note_title'),
               style: const TextStyle(
-                  fontSize: 12, color: Color(0xFFC7861E), fontWeight: FontWeight.w800)),
+                  fontSize: 12,
+                  color: Color(0xFFC7861E),
+                  fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
-          Text(tr('dep.note1'),
-              style: const TextStyle(fontSize: 11, color: T.inkMd, height: 1.7)),
-          Text(tr('dep.note2'),
-              style: const TextStyle(fontSize: 11, color: T.inkMd, height: 1.7)),
-          Text(tr('dep.note3'),
-              style: const TextStyle(fontSize: 11, color: T.inkMd, height: 1.7)),
-          Text(tr('dep.note4'),
-              style: const TextStyle(fontSize: 11, color: T.inkMd, height: 1.7)),
-          Text(tr('dep.note_eth_btc'),
-              style: const TextStyle(fontSize: 11, color: T.inkMd, height: 1.7)),
+          for (final k in const [
+            'dep.note1',
+            'dep.note2',
+            'dep.note3',
+            'dep.note4',
+            'dep.note_eth_btc'
+          ])
+            Text(tr(k),
+                style: const TextStyle(
+                    fontSize: 11, color: T.inkMd, height: 1.7)),
         ],
       ),
     );

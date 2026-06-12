@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/match.dart';
+import '../utils/ny_time.dart';
 import '../services/app_state.dart';
 import '../services/auth_gate.dart';
 import '../services/bet_slip.dart';
+import '../services/desktop_mode.dart';
 import '../services/i18n.dart';
 import '../services/stream_feed.dart';
 import '../services/toast.dart';
@@ -113,6 +115,9 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   /// 后端 getMatch 直接从内存 snapshot 取,零 API 配额消耗。
   Timer? _matchPollTimer;
 
+  /// 赔率重试定时器(见 _loadOddsWithRetry)。
+  Timer? _oddsRetryTimer;
+
   /// 进球 / 红黄牌 / 换人 时间线 — live + settled 都拉一次。
   List<MatchEvent> _events = [];
 
@@ -209,9 +214,10 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       }
     });
     final futures = <Future>[];
-    futures.add(widget.state.api.getOdds(widget.match.id).then((v) {
-      if (mounted) setState(() => _odds = v);
-    }).catchError((_) {}));
+    // 赔率:带重试/轮询地拉。首次进详情常是 cache miss,后端要同步生成;偶发慢/失败
+    // 时旧代码 catchError 吞掉就再不重试,导致"白屏要返回重进才显示"。这里改成失败/
+    // 拿到空盘也会按退避重试,直到拿到含市场的快照或 WS 推送补上(见 _flushOdds)。
+    futures.add(_loadOddsWithRetry());
     if (widget.state.isAuthenticated) {
       futures.add(widget.state.api.getStats().then((s) {
         if (mounted) setState(() => _stats = s);
@@ -247,6 +253,44 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         _refreshMatchSnapshot();
       });
     }
+  }
+
+  /// 带退避重试地拉赔率。首屏进详情常 cache miss,后端需同步生成 + 偶发慢/限流,
+  /// 一次失败就放弃会白屏。这里:成功且含市场 → 停;成功但空盘(无真盘覆盖的走地,
+  /// 后端按设计不自算)或失败 → 按退避继续重试,直到拿到含市场快照、被 WS 推送补上、
+  /// 或到达上限(约 70s,覆盖后端 oddsLoop 60s 周期一定会写好缓存)。
+  /// 退避:0(本次)、1.5s、3s、5s,之后每 8s,共 ~9 次。
+  Future<void> _loadOddsWithRetry({int attempt = 0}) async {
+    if (!mounted) return;
+    // WS 已经推来含市场的赔率 → 不必再拉。
+    if (_odds != null && _odds!.hasAnyMarket) return;
+    OddsSnapshot? got;
+    try {
+      got = await widget.state.api.getOdds(widget.match.id);
+    } catch (_) {
+      got = null; // 502/超时等 → 当作未拿到,走重试
+    }
+    if (!mounted) return;
+    if (got != null) {
+      // 即便空盘也写进去,让 UI 落到确定态("暂未提供赔率")而不是永远转圈。
+      // 但别覆盖 WS 已推来的含市场快照。
+      if (!(_odds != null && _odds!.hasAnyMarket)) {
+        setState(() => _odds = got);
+      }
+      if (got.hasAnyMarket) return; // 拿到了,收工
+    }
+    const maxAttempts = 9;
+    if (attempt >= maxAttempts) return;
+    final delayMs = switch (attempt) {
+      0 => 1500,
+      1 => 3000,
+      2 => 5000,
+      _ => 8000,
+    };
+    _oddsRetryTimer?.cancel();
+    _oddsRetryTimer = Timer(Duration(milliseconds: delayMs), () {
+      _loadOddsWithRetry(attempt: attempt + 1);
+    });
   }
 
   /// 主动拉 match snapshot — pull-to-refresh + 30s 定时调用。
@@ -519,6 +563,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     _lockTickTimer?.cancel();
     _statsTimer?.cancel();
     _matchPollTimer?.cancel();
+    _oddsRetryTimer?.cancel();
     _oddsThrottle?.cancel();
     _matchThrottle?.cancel();
     _lockSecsNotifier.dispose();
@@ -602,6 +647,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       });
     }
     final bottomPad = _locked ? 96.0 : (_drawerHeight + 16);
+    final desktop = isDesktopLayout(MediaQuery.of(context).size.width);
     return Scaffold(
       extendBody: true,
       backgroundColor: T.bgPage,
@@ -629,22 +675,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                     // RefreshIndicator 要 ListView 永远可滚动才能下拉触发
                     physics: const AlwaysScrollableScrollPhysics(),
                     addRepaintBoundaries: true,
-                    children: [
-                      _hero(),
-                      if (_locked) _lockedBanner(),
-                      if (_isLive && !_locked) _liveBanner(),
-                      if (_statsHome.isNotEmpty || _statsAway.isNotEmpty || _hasLiveStats)
-                        _liveStatsSection(),
-                      if (_events.isNotEmpty) _eventsTimelineSection(),
-                      _sectionHeader(),
-                      _columnLabels(),
-                      RepaintBoundary(child: _scoreGrid()),
-                      RepaintBoundary(child: _winnerSection()),
-                      RepaintBoundary(child: _handicapSection()),
-                      RepaintBoundary(child: _overUnderSection()),
-                      RepaintBoundary(child: _htOverUnderSection()),
-                      RepaintBoundary(child: _bttsSection()),
-                    ],
+                    children: desktop ? _desktopBody() : _mobileBody(),
                   ),
                 ),
               ),
@@ -667,7 +698,116 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     );
   }
 
+  /// 手机版:所有 section 单列纵向堆叠。
+  List<Widget> _mobileBody() {
+    return [
+      _hero(),
+      if (_locked) _lockedBanner(),
+      if (_isLive && !_locked) _liveBanner(),
+      if (_statsHome.isNotEmpty || _statsAway.isNotEmpty || _hasLiveStats)
+        _liveStatsSection(),
+      if (_events.isNotEmpty) _eventsTimelineSection(),
+      _sectionHeader(),
+      _columnLabels(),
+      RepaintBoundary(child: _scoreGrid()),
+      RepaintBoundary(child: _winnerSection()),
+      RepaintBoundary(child: _handicapSection()),
+      RepaintBoundary(child: _overUnderSection()),
+      RepaintBoundary(child: _htOverUnderSection()),
+      RepaintBoundary(child: _bttsSection()),
+    ];
+  }
+
+  /// 桌面版:居中两列。左 = hero + 现场统计 + 事件;右 = 玩法(波胆 + 各市场)。
+  /// 复用与手机版完全相同的 section 方法与下注逻辑(`_trySelect`/`_betDrawer`),
+  /// 仅改变排版,绝不影响派彩 payload。
+  List<Widget> _desktopBody() {
+    final left = <Widget>[
+      _hero(),
+      if (_locked) _lockedBanner(),
+      if (_isLive && !_locked) _liveBanner(),
+      if (_statsHome.isNotEmpty || _statsAway.isNotEmpty || _hasLiveStats)
+        _liveStatsSection(),
+      if (_events.isNotEmpty) _eventsTimelineSection(),
+    ];
+    final right = <Widget>[
+      _sectionHeader(),
+      _columnLabels(),
+      RepaintBoundary(child: _scoreGrid()),
+      RepaintBoundary(child: _winnerSection()),
+      RepaintBoundary(child: _handicapSection()),
+      RepaintBoundary(child: _overUnderSection()),
+      RepaintBoundary(child: _htOverUnderSection()),
+      RepaintBoundary(child: _bttsSection()),
+    ];
+    return [
+      Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1200),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  flex: 5,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: left,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 6,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: right,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
+
   Widget _topBar() {
+    final desktop = isDesktopLayout(MediaQuery.of(context).size.width);
+    final row = Row(
+      children: [
+        IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: Container(
+            width: 34, height: 34,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: T.border),
+            ),
+            child: const Icon(Icons.chevron_left, size: 20, color: T.ink),
+          ),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+        ),
+        const SizedBox(width: 8),
+        Text(tr('detail.title'),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: T.ink)),
+        const Spacer(),
+        if (_stats != null)
+          Row(
+            children: [
+              Text('${tr('common.balance')} ', style: const TextStyle(fontSize: 11, color: T.inkMd)),
+              Text(_fmtBal.format(_stats!.balance),
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: T.brandDeep,
+                      fontFamily: T.fontMono)),
+            ],
+          ),
+      ],
+    );
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -675,40 +815,15 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
         color: Color(0xC7FFFFFF),
         border: Border(bottom: BorderSide(color: T.border)),
       ),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: Container(
-              width: 34, height: 34,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: T.border),
+      // 桌面:背景通栏,内容居中 1200(与顶部菜单栏一致)。
+      child: desktop
+          ? Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1200),
+                child: row,
               ),
-              child: const Icon(Icons.chevron_left, size: 20, color: T.ink),
-            ),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-          ),
-          const SizedBox(width: 8),
-          Text(tr('detail.title'),
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: T.ink)),
-          const Spacer(),
-          if (_stats != null)
-            Row(
-              children: [
-                Text('${tr('common.balance')} ', style: const TextStyle(fontSize: 11, color: T.inkMd)),
-                Text(_fmtBal.format(_stats!.balance),
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                        color: T.brandDeep,
-                        fontFamily: T.fontMono)),
-              ],
-            ),
-        ],
-      ),
+            )
+          : row,
     );
   }
 
@@ -809,7 +924,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
                       // 半场比分 + 角球/黄牌一行概要(仅 live/settled 时有数据)
                       if (m.scores != null) _heroMiniStats(m),
                       const SizedBox(height: 4),
-                      Text(fmt.format(m.date),
+                      Text(fmt.format(toNyWall(m.date)),
                           style: const TextStyle(
                               fontSize: 10, color: T.inkLo, fontWeight: FontWeight.w600)),
                     ],
@@ -978,11 +1093,19 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
       final pl = ld.periodLabel;
       if (pl == 'HT') return tr('live.minute_ht');
       if (pl == 'PEN') return tr('live.minute_pen');
-      if (pl == 'BT') return ld.minuteDisplay;
+      if (pl == 'BT') return tr('live.minute_bt'); // 加时中场
+      if (pl == 'ET') {
+        // 加时赛:elapsed 续接常规时间(约 91-120'),直接显示真实分钟,
+        // 不能落进常规 90+X 补时逻辑或墙钟 >150min 判"完"。
+        final em = ld.minute > 0 ? ld.minute : 90;
+        if (ld.extra > 0) return '$em+${ld.extra}\'';
+        return "$em'";
+      }
       if (ld.extra > 0) return '${ld.minute}+${ld.extra}\'';
     }
     final upMin = ld?.minute ?? 0;
     final elapsedFromKickoff = DateTime.now().difference(m.date).inMinutes;
+    // 只会被 1H/2H 命中(ET/BT/PEN/HT 上面已 return),不会把加时赛误判成"完"。
     if (elapsedFromKickoff > 150) return tr('live.minute_ft');
     int mins;
     if (upMin == 0) {
@@ -1409,10 +1532,14 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   Widget _scoreGrid() {
     final scores = _odds?.correctScore ?? const [];
     if (scores.isEmpty) {
+      // _odds==null:首个快照还没到 → "加载中";已收到快照但无波胆盘口 →
+      // 明确告知本场暂未提供赔率,不再无限转圈。冷门 live 比赛上游(Bet365/BetsAPI)
+      // 无真盘覆盖时按设计不自算走地赔率(防上游断流套利),走地期会一直没有波胆。
+      final msg = _odds == null ? tr('detail.odds_loading') : tr('err.no_odds_for_match');
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Center(
-          child: Text(tr('detail.odds_loading'),
+          child: Text(msg,
               style: const TextStyle(color: T.inkLo, fontSize: 13)),
         ),
       );
@@ -1533,6 +1660,11 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
     }
     final currentLine = lines.firstWhere((l) => (l.line - selectedLine).abs() < 0.01);
     final lineFmt = _fmtLine(currentLine.line);
+    // 阈值按实际 line 计算(半线/整数 push 都正确):
+    //   over  → 总进球 ≥ ⌊line⌋+1   (0.5→1, 2.5→3, 整数3→4)
+    //   under → 总进球 ≤ ⌈line⌉-1   (0.5→0, 2.5→2, 整数3→2)
+    final ouOverThreshold = currentLine.line.floor() + 1;
+    final ouUnderThreshold = currentLine.line.ceil() - 1;
     final overScore = 'over@$lineFmt';
     final underScore = 'under@$lineFmt';
     // 走地标识 + 当前比分 chip
@@ -1630,7 +1762,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               Expanded(
                 child: _BinaryBetTile(
                   label: '${tr('detail.ou_over')} $lineFmt',
-                  hint: tr('detail.ou_hint_over'),
+                  hint: tr('detail.ou_hint_over').replaceAll('{n}', '$ouOverThreshold'),
                   price: currentLine.over,
                   selected: _selected?.marketType == MarketType.overUnder25 &&
                             _selected?.score == overScore,
@@ -1650,7 +1782,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
               Expanded(
                 child: _BinaryBetTile(
                   label: '${tr('detail.ou_under')} $lineFmt',
-                  hint: tr('detail.ou_hint_under'),
+                  hint: tr('detail.ou_hint_under').replaceAll('{n}', '$ouUnderThreshold'),
                   price: currentLine.under,
                   selected: _selected?.marketType == MarketType.overUnder25 &&
                             _selected?.score == underScore,
@@ -2155,6 +2287,21 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   /// 选中后:亮蓝按钮"立即下注 · {label} @ {odds}",点击弹出 [_buildBetSheet]
   /// 滚球封盘期间:倒计时占位,不可点(用 ValueListenableBuilder 隔离秒数重建)
   /// 85+ 分钟终场封盘:静态"已封盘",不可点
+  /// 桌面:把底部条内容居中限宽 1200(与顶栏/页面一致);手机原样。
+  /// 用 Align(heightFactor:1.0) 而非 Center —— bottomSheet 高度必须贴合内容,
+  /// 否则 Center 会纵向撑满,把下注条变成挡住半屏的大白块。
+  Widget _wideCenter(Widget child) {
+    if (!isDesktopLayout(MediaQuery.of(context).size.width)) return child;
+    return Align(
+      alignment: Alignment.topCenter,
+      heightFactor: 1.0,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1200),
+        child: child,
+      ),
+    );
+  }
+
   Widget _betDrawer() {
     // 85+ 分钟终场封盘优先级最高,所有按钮统一禁用展示
     if (_marketsClosed) {
@@ -2186,7 +2333,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Widget _betDrawerShell({required String label, required bool ready, required VoidCallback? onTap}) {
-    return SafeArea(
+    return _wideCenter(SafeArea(
       top: false,
       child: Container(
         margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -2230,7 +2377,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           ),
         ),
       ),
-    );
+    ));
   }
 
   /// 弹出底部 sheet:筹码选择 + 加入投注单 / 锁定下注 双按钮。
@@ -2292,7 +2439,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
   }
 
   Widget _lockedDrawer() {
-    return Container(
+    return _wideCenter(Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
       decoration: const BoxDecoration(
         color: Color(0xF2FFFFFF),
@@ -2315,7 +2462,7 @@ class _MatchDetailPageState extends State<MatchDetailPage> {
           ),
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -2757,14 +2904,37 @@ class _BetSheet extends StatefulWidget {
 
 class _BetSheetState extends State<_BetSheet> {
   late double _stake;
+  late final TextEditingController _amountCtrl;
 
   @override
   void initState() {
     super.initState();
     _stake = widget.initialStake;
+    _amountCtrl = TextEditingController(text: _stake.toStringAsFixed(0));
   }
 
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 滑块 / 预设触发:同步金额到输入框。
   void _set(double v) {
+    setState(() => _stake = v);
+    widget.onStakeChanged(v);
+    final t = v.toStringAsFixed(0);
+    if (_amountCtrl.text != t) {
+      _amountCtrl.value = TextEditingValue(
+        text: t,
+        selection: TextSelection.collapsed(offset: t.length),
+      );
+    }
+  }
+
+  /// 输入框触发:不回写输入框(避免打断光标),只更新 stake。
+  void _setFromInput(String s) {
+    final v = double.tryParse(s.trim()) ?? 0;
     setState(() => _stake = v);
     widget.onStakeChanged(v);
   }
@@ -2862,6 +3032,35 @@ class _BetSheetState extends State<_BetSheet> {
                     ),
                   ),
               ],
+            ),
+            const SizedBox(height: 12),
+            // 任意金额输入框(自由填写,与滑块/预设双向同步)。
+            TextField(
+              controller: _amountCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: false),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: T.ink,
+                  fontFamily: T.fontMono),
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: T.fill,
+                prefixIcon: const Icon(Icons.edit_outlined, size: 18, color: T.inkLo),
+                suffixText: 'USDT',
+                suffixStyle: const TextStyle(fontSize: 12, color: T.inkLo),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: T.border)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: T.brand, width: 1.5)),
+              ),
+              onChanged: _setFromInput,
             ),
             const SizedBox(height: 14),
             Row(

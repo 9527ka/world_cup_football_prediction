@@ -15,6 +15,7 @@ class LightCard extends StatelessWidget {
     this.border,
     this.gradient,
     this.onTap,
+    this.shadow = true,
   });
 
   final Widget child;
@@ -25,6 +26,8 @@ class LightCard extends StatelessWidget {
   final BoxBorder? border;
   final Gradient? gradient;
   final VoidCallback? onTap;
+  // shadow=false 用于长列表项:阴影是 Flutter Web 最贵的合成操作,关掉显著提升滚动性能。
+  final bool shadow;
 
   @override
   Widget build(BuildContext context) {
@@ -35,7 +38,7 @@ class LightCard extends StatelessWidget {
         gradient: gradient,
         borderRadius: BorderRadius.circular(radius),
         border: border ?? Border.all(color: T.border),
-        boxShadow: T.shadowSoft,
+        boxShadow: shadow ? T.shadowSoft : null,
       ),
       child: child,
     );

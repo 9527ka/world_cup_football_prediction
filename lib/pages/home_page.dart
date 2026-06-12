@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../models/match.dart';
+import '../utils/ny_time.dart';
 import '../services/app_state.dart';
 import '../services/i18n.dart';
 import '../services/toast.dart';
@@ -596,7 +597,7 @@ class _HomePageState extends State<HomePage> {
                           fontWeight: FontWeight.w700,
                           color: T.inkLo)),
                   const SizedBox(height: 2),
-                  Text(fmt.format(m.date),
+                  Text(fmt.format(toNyWall(m.date)),
                       style: const TextStyle(fontSize: 9, color: T.inkLo)),
                 ],
               ),
@@ -685,7 +686,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 const Spacer(),
-                Text(fmt.format(m.date),
+                Text(fmt.format(toNyWall(m.date)),
                     style: const TextStyle(
                         fontSize: 11,
                         color: T.brandDeep,

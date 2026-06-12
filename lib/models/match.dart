@@ -139,6 +139,8 @@ class LiveDetail {
   String get minuteDisplay {
     if (periodLabel == 'HT') return tr('live.minute_ht');
     if (periodLabel == 'PEN') return tr('live.minute_pen');
+    if (periodLabel == 'BT') return tr('live.minute_bt'); // 加时中场,minute 常为 0
+    // ET(加时赛)走下面通用分支:elapsed 续接常规时间(约 91-120'),直接显示真实分钟。
     if (extra > 0) return '$minute+$extra\'';
     if (minute > 0) return '$minute\'';
     return '';
@@ -344,6 +346,17 @@ class OddsSnapshot {
     final lu = lockUntil;
     return lu != null && lu.isAfter(DateTime.now());
   }
+
+  /// 是否含任一可展示市场。后端对"无真盘覆盖的走地"会返回 200 + 全空快照
+  /// (moneyLine/CS/OU/AH 都为 null/空),用它区分"还在加载/应重试"与"确无赔率"。
+  bool get hasAnyMarket =>
+      moneyLine != null ||
+      correctScore.isNotEmpty ||
+      overUnders.isNotEmpty ||
+      overUnder != null ||
+      btts != null ||
+      handicap != null ||
+      handicaps.isNotEmpty;
 
   factory OddsSnapshot.fromJson(Map<String, dynamic> j) {
     DateTime? lu;
@@ -565,11 +578,32 @@ class Prediction {
       );
 }
 
+/// 单个充值币种的限额 + 小数位(原生单位)。
+class DepositCurrencyCfg {
+  final double min;
+  final double max;
+  final int decimals;
+  const DepositCurrencyCfg({required this.min, required this.max, required this.decimals});
+  factory DepositCurrencyCfg.fromJson(Map<String, dynamic> j) => DepositCurrencyCfg(
+        min: double.tryParse('${j['min'] ?? 0}') ?? 0,
+        max: double.tryParse('${j['max'] ?? 0}') ?? 0,
+        decimals: j['decimals'] is int
+            ? j['decimals'] as int
+            : int.tryParse('${j['decimals'] ?? 2}') ?? 2,
+      );
+}
+
 class Wallet {
   final double balance;
+  final double balanceEth; // ETH 原生余额(充值入账,需兑换成 USDT 才能下注/提现)
+  final double balanceBtc; // BTC 原生余额
+  final double rateEth;    // ETH→USDT 实时汇率(0=暂不可用)
+  final double rateBtc;    // BTC→USDT 实时汇率
   final String depositAddress;
   final String ethDepositAddress;
   final String btcDepositAddress;
+  // 分币种充值限额(key: USDT/USDC/ETH/BTC)。
+  final Map<String, DepositCurrencyCfg> depositCurrencies;
   final String lastWithdrawAddress;
   final bool hasPendingWithdrawal;
   final double withdrawFeeTRC20;
@@ -580,12 +614,19 @@ class Wallet {
   final double maxDeposit;
   final double minWithdraw;
   final double maxWithdraw;
+  final double betStakeMin; // 单次下注最低额(USDT),0=不限
+  final double betStakeMax; // 单次下注最高额(USDT),0=不限
   final DateTime updatedAt;
   Wallet({
     required this.balance,
+    this.balanceEth = 0,
+    this.balanceBtc = 0,
+    this.rateEth = 0,
+    this.rateBtc = 0,
     required this.depositAddress,
     required this.ethDepositAddress,
     required this.btcDepositAddress,
+    required this.depositCurrencies,
     required this.lastWithdrawAddress,
     required this.hasPendingWithdrawal,
     required this.withdrawFeeTRC20,
@@ -596,13 +637,23 @@ class Wallet {
     required this.maxDeposit,
     required this.minWithdraw,
     required this.maxWithdraw,
+    this.betStakeMin = 0,
+    this.betStakeMax = 0,
     required this.updatedAt,
   });
   factory Wallet.fromJson(Map<String, dynamic> j) => Wallet(
         balance: (j['balance'] ?? 0).toDouble(),
+        balanceEth: (j['balanceEth'] ?? 0).toDouble(),
+        balanceBtc: (j['balanceBtc'] ?? 0).toDouble(),
+        rateEth: (j['rateEth'] ?? 0).toDouble(),
+        rateBtc: (j['rateBtc'] ?? 0).toDouble(),
         depositAddress: j['depositAddress'] ?? '',
         ethDepositAddress: j['ethDepositAddress'] ?? '',
         btcDepositAddress: j['btcDepositAddress'] ?? '',
+        depositCurrencies: (j['depositCurrencies'] is Map)
+            ? (j['depositCurrencies'] as Map).map((k, v) => MapEntry(
+                '$k', DepositCurrencyCfg.fromJson(Map<String, dynamic>.from(v as Map))))
+            : <String, DepositCurrencyCfg>{},
         lastWithdrawAddress: j['lastWithdrawAddress'] ?? '',
         hasPendingWithdrawal: j['hasPendingWithdrawal'] == true,
         withdrawFeeTRC20: double.tryParse('${j['withdrawFeeTRC20'] ?? '1'}') ?? 1,
@@ -613,7 +664,11 @@ class Wallet {
         maxDeposit: double.tryParse('${j['maxDeposit'] ?? '1000000'}') ?? 1000000,
         minWithdraw: double.tryParse('${j['minWithdraw'] ?? '10'}') ?? 10,
         maxWithdraw: double.tryParse('${j['maxWithdraw'] ?? '1000000'}') ?? 1000000,
-        updatedAt: DateTime.parse(j['updatedAt']).toLocal(),
+        betStakeMin: double.tryParse('${j['betStakeMin'] ?? '0'}') ?? 0,
+        betStakeMax: double.tryParse('${j['betStakeMax'] ?? '0'}') ?? 0,
+        updatedAt: j['updatedAt'] != null
+            ? DateTime.parse(j['updatedAt']).toLocal()
+            : DateTime.now(),
       );
 }
 
@@ -775,6 +830,7 @@ class UserStats {
   final double monthIncome;
   final double monthExpense;
   final double monthProfit;
+  final double monthStake; // 当月下注本金(后端 monthStake)
   final double todayProfit;
 
   UserStats({
@@ -789,6 +845,7 @@ class UserStats {
     required this.monthIncome,
     required this.monthExpense,
     required this.monthProfit,
+    this.monthStake = 0,
     required this.todayProfit,
   });
 
@@ -804,6 +861,7 @@ class UserStats {
         monthIncome: (j['monthIncome'] ?? 0).toDouble(),
         monthExpense: (j['monthExpense'] ?? 0).toDouble(),
         monthProfit: (j['monthProfit'] ?? 0).toDouble(),
+        monthStake: (j['monthStake'] ?? 0).toDouble(),
         todayProfit: (j['todayProfit'] ?? 0).toDouble(),
       );
 
@@ -827,7 +885,9 @@ class LedgerEntry {
   final String type; // deposit | withdraw | bet | win | loss | rebate
   final String title;
   final String desc;
-  final double amount; // signed
+  final double amount; // signed; 充值时为原生币种数量
+  final String currency; // 充值专用:USDT/USDC/ETH/BTC;其它类型为空(按 USDT 显示)
+  final double amountUsdt; // 充值专用:≈USDT(已审核才 >0)
   final String status;
   final DateTime when;
   final int refId;
@@ -837,6 +897,8 @@ class LedgerEntry {
     required this.title,
     required this.desc,
     required this.amount,
+    required this.currency,
+    required this.amountUsdt,
     required this.status,
     required this.when,
     required this.refId,
@@ -847,6 +909,8 @@ class LedgerEntry {
         title: j['title'] ?? '',
         desc: j['desc'] ?? '',
         amount: (j['amount'] ?? 0).toDouble(),
+        currency: j['currency'] ?? '',
+        amountUsdt: (j['amountUsdt'] ?? 0).toDouble(),
         status: j['status'] ?? '',
         when: DateTime.parse(j['when']).toLocal(),
         refId: (j['refId'] ?? 0) as int,
@@ -971,13 +1035,32 @@ class MyRank {
 /// Home / global UI config the operator can edit in /admin/settings.
 class HomeConfig {
   final double weeklyPool;
-  final String customerService; // Telegram username, without leading '@'
-  HomeConfig({required this.weeklyPool, required this.customerService});
-  factory HomeConfig.fromJson(Map<String, dynamic> j) => HomeConfig(
-        weeklyPool: (j['weeklyPool'] ?? 0).toDouble(),
-        customerService:
-            (j['customerService'] as String?)?.trim().isNotEmpty == true
-                ? (j['customerService'] as String).trim()
-                : 'espn_football',
-      );
+  final String customerService; // 向后兼容:单一客服 Telegram 用户名(不带 @)
+  /// 分语言客服账号(key: zh/en/ko/ja),value 为 Telegram 用户名(不带 @)。
+  final Map<String, String> customerServices;
+  HomeConfig({
+    required this.weeklyPool,
+    required this.customerService,
+    required this.customerServices,
+  });
+  factory HomeConfig.fromJson(Map<String, dynamic> j) {
+    // 后台未配置客服时保持为空 → 前端禁用客服入口,不再写死跳无关账号。
+    final legacy =
+        (j['customerService'] as String?)?.trim().isNotEmpty == true
+            ? (j['customerService'] as String).trim()
+            : '';
+    final map = <String, String>{};
+    final raw = j['customerServices'];
+    if (raw is Map) {
+      raw.forEach((k, v) {
+        final s = (v as String?)?.trim() ?? '';
+        if (s.isNotEmpty) map['$k'] = s;
+      });
+    }
+    return HomeConfig(
+      weeklyPool: (j['weeklyPool'] ?? 0).toDouble(),
+      customerService: legacy,
+      customerServices: map,
+    );
+  }
 }

@@ -55,8 +55,11 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
   /// 当前钱包余额 — 提交前预检用。null 表示还没加载到。
   double? _balance;
 
-  /// 全局最小投注额(对齐后端 placePrediction 的 fallback,但显式校验给 UX)。
-  static const double _minStake = 10;
+  /// 单次下注金额限制 — 从后台「系统设置」读取(wallet 接口下发)。
+  /// _betMin 默认 10(历史前端默认);_betMax=0 表示不限上限。后端 placePrediction/
+  /// submitParlay 会再做权威校验,这里只为提交前给友好提示。
+  double _betMin = 10;
+  double _betMax = 0;
 
   @override
   void initState() {
@@ -71,7 +74,14 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
   Future<void> _refreshBalance() async {
     try {
       final w = await widget.state.api.getWallet();
-      if (mounted) setState(() => _balance = w.balance);
+      if (mounted) {
+        setState(() {
+          _balance = w.balance;
+          // betStakeMin=0 表示后台未设下限 → 沿用前端默认 10。
+          _betMin = w.betStakeMin > 0 ? w.betStakeMin : 10;
+          _betMax = w.betStakeMax; // 0 = 不限上限
+        });
+      }
     } catch (_) {/* 余额拿不到就降级 — 不阻塞下注流程 */}
   }
 
@@ -536,8 +546,13 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
         hint = tr('slip.parlay_min');
         totalStake = slip.parlayStake;
         potentialPayout = 0;
-      } else if (slip.parlayStake < _minStake) {
-        hint = tr('slip.min_stake').replaceAll('{n}', _minStake.toStringAsFixed(0));
+      } else if (slip.parlayStake < _betMin) {
+        hint = tr('slip.min_stake').replaceAll('{n}', _betMin.toStringAsFixed(0));
+        totalStake = slip.parlayStake;
+        potentialPayout = 0;
+        stakeValid = false;
+      } else if (_betMax > 0 && slip.parlayStake > _betMax) {
+        hint = tr('slip.max_stake').replaceAll('{n}', _betMax.toStringAsFixed(0));
         totalStake = slip.parlayStake;
         potentialPayout = 0;
         stakeValid = false;
@@ -549,10 +564,15 @@ class _BetSlipSheetBodyState extends State<_BetSlipSheetBody> {
       totalStake = slip.items.fold<double>(0, (a, x) => a + slip.singleStakeFor(x));
       potentialPayout = slip.items.fold<double>(
           0, (a, x) => a + slip.singleStakeFor(x) * x.price);
-      // 任一 single stake 低于最低额 → 阻塞提交
-      final hasLowStake = slip.items.any((x) => slip.singleStakeFor(x) < _minStake);
+      // 任一 single stake 低于最低额 / 高于最高额 → 阻塞提交
+      final hasLowStake = slip.items.any((x) => slip.singleStakeFor(x) < _betMin);
+      final hasHighStake =
+          _betMax > 0 && slip.items.any((x) => slip.singleStakeFor(x) > _betMax);
       if (hasLowStake) {
-        hint = tr('slip.each_min').replaceAll('{n}', _minStake.toStringAsFixed(0));
+        hint = tr('slip.each_min').replaceAll('{n}', _betMin.toStringAsFixed(0));
+        stakeValid = false;
+      } else if (hasHighStake) {
+        hint = tr('slip.max_stake').replaceAll('{n}', _betMax.toStringAsFixed(0));
         stakeValid = false;
       }
     }

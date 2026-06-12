@@ -24,8 +24,10 @@ import 'app_state.dart';
 import 'telegram.dart';
 
 /// Mini App vs 浏览器环境判定。
-/// `Telegram.initData()` 非空 = Mini App(Telegram WebView 注入了 user payload)。
-bool isInMiniApp() => Telegram.initData().isNotEmpty;
+/// 用 `Telegram.WebApp.platform`(inTelegramWebApp)而非 initData 是否为空来判定:
+/// initData 可能在真正的 Mini App 里暂缺/失效,此时仍应按 Mini App 处理(走 reload
+/// 自愈 + Telegram 登录提示),绝不能当成浏览器去显示邮箱/网页 OAuth 登录。
+bool isInMiniApp() => Telegram.inTelegramWebApp() || Telegram.initData().isNotEmpty;
 
 /// 浏览器登录:整页跳转到 Telegram OAuth,授权回来后由 tg_auth_done.html 接管。
 ///
@@ -46,13 +48,22 @@ Future<bool> startBrowserTelegramLogin(AppState state) async {
     final origin = _windowOrigin();
     if (origin.isEmpty) return false;
 
-    // 保存当前 URL,登录回来后 tg_auth_done.html 跳回这里。
+    // 保存当前 URL,登录回来后 tg_auth_done.html 跳回这里(同域名时的兜底)。
     _saveReturnUrl();
 
-    final returnTo = '$origin/tg_auth_done.html';
+    // 规范登录域名:BotFather /setdomain 只能绑一个域名,多域名部署时所有域名的
+    // OAuth 都统一走它(后端 TELEGRAM_LOGIN_ORIGIN 下发);留空则回退当前域名。
+    final authOrigin = cfg.loginOrigin.isNotEmpty ? cfg.loginOrigin : origin;
+    // 当前页 URL 作为 ret 带给中转页:授权后据此跳回原域名(sessionStorage 按 origin
+    // 隔离,跨域名拿不到,必须走 URL 传递)。token 是 JWT(Bearer),跨域名通用。
+    final href = _windowHref();
+    var returnTo = '$authOrigin/tg_auth_done.html';
+    if (href.isNotEmpty) {
+      returnTo += '?ret=${Uri.encodeQueryComponent(href)}';
+    }
     final oauthUrl = 'https://oauth.telegram.org/auth'
         '?bot_id=${cfg.botId}'
-        '&origin=${Uri.encodeQueryComponent(origin)}'
+        '&origin=${Uri.encodeQueryComponent(authOrigin)}'
         '&return_to=${Uri.encodeQueryComponent(returnTo)}'
         '&request_access=write';
 
@@ -133,6 +144,15 @@ String _windowOrigin() {
     final o = loc?.getProperty('origin'.toJS);
     if (o == null) return '';
     return o.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+String _windowHref() {
+  try {
+    final loc = globalContext.getProperty('location'.toJS) as JSObject?;
+    return (loc?.getProperty('href'.toJS))?.toString() ?? '';
   } catch (_) {
     return '';
   }

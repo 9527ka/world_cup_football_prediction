@@ -4,10 +4,12 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'pages/desktop/desktop_shell.dart';
 import 'pages/main_shell.dart';
 import 'services/api_client.dart';
 import 'services/app_state.dart';
 import 'services/auth_gate.dart';
+import 'services/desktop_mode.dart';
 import 'services/i18n.dart';
 import 'services/odds_stream.dart';
 import 'services/team_overrides.dart';
@@ -65,6 +67,9 @@ Future<void> main() async {
   // 必须**在** state.initialize() 之前完成,否则 initialize 会因为 token 已存在
   // 跳过浏览器登录路径,但又因为 api.token 还没设而当未登录。
   unawaited(consumeIncomingToken(state).catchError((_) => null).then((_) => state.initialize()));
+  // 按访客 IP 国家自动定界面语言(后端 CF-IPCountry → geoLang)。异步不堵 splash:
+  // 首帧先用设备/TG 语言,geoLang 回来后若用户未手动选过则切换并重绘。
+  unawaited(api.authConfig().then((cfg) => I18n.instance.applyGeoLocale(cfg.geoLang)).catchError((_) {}));
   runApp(CupApp(state: state));
   unawaited(TeamOverrides.instance.load(api));
 }
@@ -83,17 +88,39 @@ class CupApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: T.lightTheme(),
         scrollBehavior: const _AppScrollBehavior(),
-        builder: (context, child) => Container(
-          color: const Color(0xFF0A0E1A),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: child,
+        // 手机版:黑底 + 居中 460px 窄栏(含所有 pushed 路由)。
+        // 桌面版(?a=test 且宽屏):放开宽度,由 DesktopShell 自行排版。
+        builder: (context, child) {
+          final desktop = isDesktopLayout(MediaQuery.of(context).size.width);
+          if (desktop) {
+            return Container(color: T.bgPage, child: child);
+          }
+          return Container(
+            color: const Color(0xFF0A0E1A),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: child,
+              ),
             ),
-          ),
-        ),
-        home: MainShell(state: state),
+          );
+        },
+        home: RootShell(state: state),
       ),
     );
+  }
+}
+
+/// 根据网关 + 当前宽度选择手机壳或桌面壳。随窗口缩放自动切换,
+/// 与 [MaterialApp.builder] 里的 clamp 判断用同一 [isDesktopLayout]。
+class RootShell extends StatelessWidget {
+  const RootShell({super.key, required this.state});
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final desktop = isDesktopLayout(MediaQuery.of(context).size.width);
+    if (desktop) return DesktopShell(state: state);
+    return MainShell(state: state);
   }
 }

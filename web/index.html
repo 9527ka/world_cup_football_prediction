@@ -11,7 +11,10 @@
   <link rel="manifest" href="manifest.json">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    html, body { background:#0a1929; margin:0; height:100%; }
+    /* overscroll-behavior:none 禁用浏览器/WebView 的原生下拉刷新与回弹链:
+       Android Telegram(内嵌 Chrome)里手指下滑回弹到顶会触发原生 pull-to-refresh
+       → 整个 Mini App 重载。设为 none 后只保留 Flutter 自己的下拉刷新,不再整页重载。 */
+    html, body { background:#0a1929; margin:0; height:100%; overscroll-behavior:none; }
     /* 开屏 Loading — 跳动的足球。Flutter 启动后会替换 body 内容,本节自然消失。 */
     #loading {
       position: fixed;
